@@ -148,7 +148,7 @@ class PayPageController extends Controller
             'methods' => $payment->isFinal() ? [] : collect(Gateways::get($payment->gateway)->methods($payment))->map(function (array $m) use ($payment) {
                 $quote = Fees::quote($payment->amount, $payment->currency, $m['id'], $payment->company->fee_bearer ?? 'merchant');
 
-                return $m + ['fee' => $quote['fee'], 'total' => $quote['charged']];
+                return $m + ['fee' => $quote['fee'], 'fee_rate' => $quote['rate'], 'total' => $quote['charged']];
             })->all(),
             'attempt' => $attempt ? [
                 'method' => $attempt->method,

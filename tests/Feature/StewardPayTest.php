@@ -352,6 +352,15 @@ class StewardPayTest extends TestCase
         $methods = collect($this->getJson("/p/{$id}/status")->json('methods'))->keyBy('id');
         $this->assertSame(['0.05', '5.05'], [$methods['ecocash']['fee'], $methods['ecocash']['total']]);
         $this->assertSame(['0.20', '5.20'], [$methods['card']['fee'], $methods['card']['total']]);
+        // The rule is shown beside the fee: the percentage, or the bank's minimum when that is what is charged.
+        $this->assertSame(['1%', 'USD 0.20'], [$methods['ecocash']['fee_rate'], $methods['card']['fee_rate']]);
+        $this->assertSame('1%', Fees::quote('500.00', 'USD', 'card', 'customer')['rate']);
+        $this->assertNull(Fees::quote('500.00', 'USD', 'card', 'merchant')['rate']);
+
+        \App\Models\Setting::write('charges', ['USD' => ['margin' => ['percent' => 0.5, 'fixed' => 0]]]);
+        $this->assertSame(['1.5%', '0.5% + USD 0.20'], [Fees::quote('2.00', 'USD', 'ecocash', 'customer')['rate'], Fees::quote('2.00', 'USD', 'card', 'customer')['rate']]);
+        $this->assertSame('2.03', Fees::quote('2.00', 'USD', 'ecocash', 'customer')['charged']);
+        \App\Models\Setting::write('charges', []);
 
         $this->postJson("/p/{$id}/pay", ['method' => 'card'])->assertOk()->assertJsonPath('payment.charged', '5.20');
         Http::assertSent(fn (ClientRequest $r) => str_ends_with($r->url(), '/sdk/action') && $r['amount'] === '5.20');

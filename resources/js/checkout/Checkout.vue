@@ -377,7 +377,7 @@ const waitingCopy = computed(() =>
                     <template v-else>Pay {{ money(due) }}</template>
                 </button>
                 <p v-if="hasFee" class="mt-2 text-center text-[13px] text-mute">
-                    You pay <strong class="font-semibold text-ink">{{ money(due) }}</strong>: {{ money(pay.amount) }} + {{ money(dueFee) }} processing fee
+                    You pay <strong class="font-semibold text-ink">{{ money(due) }}</strong>: {{ money(pay.amount) }} + {{ money(dueFee) }} processing fee<template v-if="chosen?.fee_rate"> ({{ chosen.fee_rate }})</template>
                 </p>
             </form>
 

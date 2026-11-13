@@ -81,7 +81,7 @@ final class Fees
     /**
      * Everything about one payment of $amount made with $method.
      *
-     * @return array{amount:string, fee:string, charged:string, bank_fee:string, bank_credits:string, margin:string, company_keeps:string}
+     * @return array{rate:?string, amount:string, fee:string, charged:string, bank_fee:string, bank_credits:string, margin:string, company_keeps:string}
      */
     public static function quote(string|float $amount, string $currency, string $method, string $bearer): array
     {
@@ -111,6 +111,7 @@ final class Fees
         $margin = $bearer === 'customer' ? max($charged - $amount - $bankFee, 0) : $margin;
 
         return [
+            'rate' => $bearer === 'customer' ? self::rateLabel($currency, $method, $charged) : null,
             'amount' => self::money($amount),
             'fee' => self::money($charged - $amount),
             'charged' => self::money($charged),
@@ -119,6 +120,29 @@ final class Fees
             'margin' => self::money($margin),
             'company_keeps' => self::money($charged - $bankFee - $margin),
         ];
+    }
+
+    /**
+     * The rule behind a fee on top, in a few characters for the checkout:
+     * "1.5%", "0.5% + USD 0.20" or "USD 0.20". The bank's percentage counts
+     * unless its minimum is what was actually charged, in which case the
+     * minimum is shown as the fixed part — so the label always describes the
+     * fee the shopper is looking at.
+     */
+    public static function rateLabel(string $currency, string $method, float $charged): ?string
+    {
+        $rules = self::rules($currency);
+        $bank = $rules['bank'][$method] ?? $rules['bank']['card'];
+        $minimumApplies = $bank['minimum'] > 0 && round($charged * $bank['percent'] / 100, 2) <= $bank['minimum'];
+
+        $percent = $rules['margin']['percent'] + ($minimumApplies ? 0 : $bank['percent']);
+        $fixed = $rules['margin']['fixed'] + ($minimumApplies ? $bank['minimum'] : 0);
+        $parts = array_filter([
+            $percent > 0 ? rtrim(rtrim(number_format($percent, 3, '.', ''), '0'), '.').'%' : null,
+            $fixed > 0 ? strtoupper($currency).' '.self::money($fixed) : null,
+        ]);
+
+        return $parts ? implode(' + ', $parts) : null;
     }
 
     public static function money(float $value): string
