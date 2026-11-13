@@ -204,6 +204,24 @@ class StewardPayTest extends TestCase
         Http::assertNotSent(fn (ClientRequest $r) => $r->url() === 'https://shop.test/hooks/pay'); // nothing to tell the shop yet
     }
 
+    public function test_an_ecocash_refusal_before_any_prompt_is_told_apart_from_an_unanswered_one(): void
+    {
+        $this->bank([
+            self::BANK.'/sdk/action' => Http::sequence()
+                ->push($this->envelope(['uid' => 'e1', 'status' => 'FAILED', 'errorMessage' => 'Transaction failed', 'seconds' => '1.4', 'amount' => '48.00']))
+                ->push($this->envelope(['uid' => 'e2', 'status' => 'FAILED', 'errorMessage' => 'Transaction failed', 'seconds' => '61.2', 'amount' => '48.00'])),
+        ]);
+        $id = $this->payment();
+
+        $this->postJson("/p/{$id}/pay", ['method' => 'ecocash', 'phone' => '0771234567'])->assertOk();
+        $this->app->terminate();
+        $this->assertStringContainsString('before any prompt reached the phone', $this->getJson("/p/{$id}/status")->json('attempt.error'));
+
+        $this->postJson("/p/{$id}/pay", ['method' => 'ecocash', 'phone' => '0771234567'])->assertOk();
+        $this->app->terminate();
+        $this->assertStringContainsString('did not approve', $this->getJson("/p/{$id}/status")->json('attempt.error'));
+    }
+
     public function test_bank_account_hands_the_shopper_the_banks_page_and_needs_their_number(): void
     {
         $this->bank([
@@ -304,23 +322,89 @@ class StewardPayTest extends TestCase
         $this->assertSame(1, Http::recorded(fn (ClientRequest $r) => $r->url() === 'https://shop.test/hooks/pay')->count()); // the shop is told once
     }
 
-    public function test_a_company_can_pass_the_fee_to_the_shopper(): void
+    public function test_a_company_can_pass_the_fee_to_the_shopper_and_it_depends_on_the_way_of_paying(): void
     {
         $this->bank([
             self::BANK.'/sdk/action' => Http::response($this->envelope(['uid' => 'u1', 'status' => 'PENDING', 'sessionId' => 'S1', 'targetUrl' => 'https://na.gateway.mastercard.com/x'])),
         ]);
         Company::first()->update(['fee_bearer' => 'customer']);
 
-        $created = $this->withToken($this->live)->postJson('/api/v1/payments', [
-            'amount' => '48.00', 'currency' => 'USD', 'reference' => 'F1', 'return_url' => 'https://shop.test/thanks',
-        ])->assertStatus(201)->assertJsonPath('amount', '48.00')->assertJsonPath('fee', '0.49')->assertJsonPath('charged', '48.49');
+        // Nothing is added until the shopper chooses how to pay…
+        $id = $this->withToken($this->live)->postJson('/api/v1/payments', [
+            'amount' => '5.00', 'currency' => 'USD', 'reference' => 'F1', 'return_url' => 'https://shop.test/thanks',
+        ])->assertStatus(201)->assertJsonPath('amount', '5.00')->assertJsonPath('fee', '0.00')->json('id');
 
-        $this->postJson('/p/'.$created->json('id').'/pay', ['method' => 'card'])->assertOk();
-        Http::assertSent(fn (ClientRequest $r) => str_ends_with($r->url(), '/sdk/action') && $r['amount'] === '48.49');
+        // …and the checkout shows each way with its own total: the bank's 0.20 minimum is for cards only.
+        $methods = collect($this->getJson("/p/{$id}/status")->json('methods'))->keyBy('id');
+        $this->assertSame(['0.05', '5.05'], [$methods['ecocash']['fee'], $methods['ecocash']['total']]);
+        $this->assertSame(['0.20', '5.20'], [$methods['card']['fee'], $methods['card']['total']]);
 
-        // After the bank keeps 1% of 48.49, the company still receives at least the 48.00.
-        $this->assertGreaterThanOrEqual(48.00, 48.49 - (float) Fees::bankCut('48.49'));
-        $this->assertSame('0.20', Fees::onTop('5.00'));  // the minimum applies to small amounts
+        $this->postJson("/p/{$id}/pay", ['method' => 'card'])->assertOk()->assertJsonPath('payment.charged', '5.20');
+        Http::assertSent(fn (ClientRequest $r) => str_ends_with($r->url(), '/sdk/action') && $r['amount'] === '5.20');
+    }
+
+    public function test_charges_always_add_up_and_tally_with_what_the_bank_credits(): void
+    {
+        // The bank's own rule: cards 1% with a 0.20 minimum; EcoCash and bank account 1%.
+        $this->assertSame('0.20', Fees::bankCut('5.20', 'USD', 'card'));
+        $this->assertSame('0.05', Fees::bankCut('5.05', 'USD', 'ecocash'));
+
+        foreach (['1.00', '5.00', '19.99', '48.00', '333.33', '1000.00'] as $amount) {
+            foreach (Fees::METHODS as $method) {
+                $q = Fees::quote($amount, 'USD', $method, 'customer');
+                // On top: the company is left with at least the full order amount, to the cent…
+                $this->assertGreaterThanOrEqual((float) $amount, (float) $q['company_keeps'], "{$amount} by {$method}");
+                $this->assertLessThanOrEqual((float) $amount + 0.005, (float) $q['company_keeps'], "{$amount} by {$method}"); // and not a cent more
+                $this->assertSame('0.00', $q['margin']); // no margin is set, so none appears
+                // …and nothing goes missing between the shopper, the bank, the gateway and the company.
+                $this->assertEqualsWithDelta((float) $q['charged'], (float) $q['bank_fee'] + (float) $q['margin'] + (float) $q['company_keeps'], 0.001);
+                $this->assertSame($q['bank_fee'], Fees::bankCut($q['charged'], 'USD', $method));
+
+                $absorbed = Fees::quote($amount, 'USD', $method, 'merchant');
+                $this->assertSame([$amount, '0.00'], [$absorbed['charged'], $absorbed['fee']]);
+            }
+        }
+    }
+
+    public function test_staff_set_the_charges_and_a_margin_becomes_gateway_profit(): void
+    {
+        $admin = User::factory()->create(['company_id' => null, 'role' => 'super_admin', 'status' => 'active']);
+        $finance = User::factory()->create(['company_id' => Company::first()->id, 'role' => 'finance', 'status' => 'active']);
+        $rules = ['currency' => 'USD', 'bank' => [
+            'card' => ['percent' => 1, 'minimum' => 0.20], 'ecocash' => ['percent' => 1, 'minimum' => 0], 'bank' => ['percent' => 1, 'minimum' => 0],
+        ], 'margin' => ['percent' => 0.5, 'fixed' => 0.10]];
+
+        $this->actingAs($finance)->putJson('/console-api/charges', $rules)->assertStatus(403);   // a company cannot set them
+        $this->actingAs($admin)->putJson('/console-api/charges', ['margin' => ['percent' => 40, 'fixed' => 0]] + $rules)->assertStatus(422);
+        $this->actingAs($admin)->putJson('/console-api/charges', $rules)->assertOk()->assertJsonPath('rules.USD.margin.percent', 0.5);
+        $this->assertDatabaseHas('activity_logs', ['action' => 'charges.changed']);
+
+        // 100.00 by EcoCash, fee on top: margin 0.60, and the bank's 1% of the total.
+        Company::first()->update(['fee_bearer' => 'customer']);
+        $this->bank([
+            self::BANK.'/sdk/action' => fn (ClientRequest $r) => Http::response($this->envelope(['uid' => 'e1', 'status' => 'SUCCESS', 'amount' => $r['amount'], 'transaction' => ['debitReference' => 'FT1']])),
+        ]);
+        $id = $this->payment(['amount' => '100.00', 'reference' => 'M-1']);
+        $this->postJson("/p/{$id}/pay", ['method' => 'ecocash', 'phone' => '0771234567'])->assertOk();
+        $this->app->terminate();
+
+        $payment = Payment::findPublic($id);
+        $this->assertSame(['paid', '1.62', '1.02', '0.60'], [$payment->status, $payment->fee, $payment->bank_fee, $payment->margin]);
+
+        $seen = $this->actingAs($admin)->getJson("/console-api/payments/{$id}")->json('payment');
+        $this->assertSame(['101.62', '100.60', '100.00'], [$seen['charged'], $seen['bank_credits'], $seen['company_keeps']]);
+
+        $charges = $this->actingAs($admin)->getJson('/console-api/charges?mode=live')->assertOk();
+        $this->assertSame(['100.60', '0.60', '1.02'], [$charges->json('month.0.bank_credited'), $charges->json('month.0.gateway_profit'), $charges->json('month.0.bank_kept')]);
+        $this->assertSame('0.60', $this->actingAs($finance)->getJson('/console-api/charges?mode=live')->json('all_time.0.gateway_profit'));
+
+        // Absorbed instead: the shopper pays the order amount; both come out of what the company receives.
+        Company::first()->update(['fee_bearer' => 'merchant']);
+        $second = $this->payment(['amount' => '100.00', 'reference' => 'M-2']);
+        $this->postJson("/p/{$second}/pay", ['method' => 'ecocash', 'phone' => '0771234567'])->assertOk();
+        $this->app->terminate();
+        $absorbed = Payment::findPublic($second);
+        $this->assertSame(['0.00', '1.00', '0.60'], [$absorbed->fee, $absorbed->bank_fee, $absorbed->margin]);
     }
 
     public function test_only_allowed_sites_may_frame_the_checkout(): void

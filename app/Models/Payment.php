@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 #[Fillable([
-    'company_id', 'mode', 'reference', 'amount', 'fee', 'payer_phone', 'expires_at', 'currency', 'status', 'gateway', 'gateway_reference',
+    'company_id', 'mode', 'reference', 'amount', 'fee', 'bank_fee', 'margin', 'payer_phone', 'expires_at', 'currency', 'status', 'gateway', 'gateway_reference',
     'method', 'description', 'return_url', 'callback_url', 'idempotency_key', 'metadata',
     'callback_status', 'callback_attempts', 'paid_at', 'finished_at',
 ])]
@@ -24,6 +24,8 @@ class Payment extends Model
         return [
             'amount' => 'decimal:2',
             'fee' => 'decimal:2',
+            'bank_fee' => 'decimal:2',
+            'margin' => 'decimal:2',
             'expires_at' => 'datetime',
             'metadata' => 'array',
             'paid_at' => 'datetime',

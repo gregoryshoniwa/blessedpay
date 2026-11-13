@@ -68,6 +68,15 @@ The shop lives next door at `../blessluxe` (Laravel 13 + Vue 3 + MySQL). Its `CL
 - **Try it follows the Test / Live switch** (owner's request). With "Live keys" it takes a live key and makes REAL payments through the bank: it shows a warning, needs an "I understand" tick, defaults to 1.00, and never stores the live key (test keys stay in sessionStorage). Don't remove the tick or start remembering live keys.
 - Callbacks record the headers sent and up to 20,000 characters of the company's answer.
 
+## Charges (built 13 Nov 2026, branch `feature/charges`)
+
+- **Two charges, set by staff per currency on `/console/charges`** (`settings` table, key `charges`; [Fees](app/Services/Fees.php)): the **bank's fee per way of paying**, exactly as the bank applies it (defaults: card 1% min 0.20; EcoCash and bank account 1%, no minimum), and the **gateway margin** (percent of the order + fixed), which reports call gateway profit. Owner's rule: the figures must tally with the bank — set the bank's fee to what the bank really keeps, never to a rounded guess.
+- **The fee on top depends on the way of paying**, so it is set when the shopper chooses one (`PaymentService::startAttempt`), not when the payment is created: a new payment has `fee` 0.00 and the checkout shows each method's own total (`methods[].fee/total`). `Fees::quote()` charges the least that leaves the company the full order amount plus the margin after the bank's cut — never a cent more.
+- **Every paid payment keeps its own split** (`payments.bank_fee`, `payments.margin`, written in `settle()` with the charges in force then), so old figures never move when the charges change. Always: shopper paid − bank fee = **bank credits** (the figure to find on the bank statement); bank credits − margin = company keeps.
+- **The margin is an accounting figure.** The bank pays everything into the one merchant account; nothing is held apart for the gateway. Charging a margin to a company the owner does not own is part of the regulated question in "option A".
+- The bank's rounding of its fee has not been checked against a real statement yet (we round to the nearest cent).
+- **EcoCash "Transaction failed"** is the bank's fixed text whenever its EcoCash adapter answers FAILED (`EcocashProcessor` in the bank's code): the bank does not pass on why. Our request matches what the bank's code expects (phone as 2637…, amount as a string, `REMOTE` + `ECOCASH`). The bank's answer carries `seconds`: a fast failure (under 12 s) means EcoCash refused before prompting, a long one means the prompt was not approved — the shopper's message and the trail say which. The bank charges EcoCash through ITS OWN EcoCash merchant code (not one per client), so a refusal before the prompt is for the bank to look into. The public docs (cyberpay.co.zw/docs/core-api) only describe `/lab/v1`; there is no v2 for live.
+
 ## Commands
 
 ```bash

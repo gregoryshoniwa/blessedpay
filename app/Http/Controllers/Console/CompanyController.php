@@ -160,7 +160,7 @@ class CompanyController extends Controller
             'status' => $c->status,
             'fee_bearer' => $c->fee_bearer ?? 'merchant',
             'embed_origins' => $c->embed_origins ?? [],
-            'fee' => ['percent' => Fees::percent(), 'minimum' => Fees::minimum()],
+            'fee' => ['percent' => Fees::rules()['bank']['card']['percent'], 'minimum' => Fees::rules()['bank']['card']['minimum']],
             'live_ready' => Gateways::forMode('live')->isConfigured(),
             'users_count' => $c->users_count ?? 0,
             'payments_count' => $c->payments_count ?? 0,

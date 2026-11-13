@@ -88,7 +88,7 @@ class StewardPayGateway implements BankGateway
                 'returnUrl' => route('pay.card-return', $payment->publicId()),
             ]),
             'bank' => $this->client->initialize($fields + ['authType' => 'WEB', 'paymentProcessorLabel' => 'TNCB']),
-            'ecocash' => $this->client->initialize($fields + ['authType' => 'REMOTE', 'paymentProcessorLabel' => 'ECOCASH'], timeout: 140),
+            'ecocash' => $this->client->initialize($fields + ['authType' => 'REMOTE', 'paymentProcessorLabel' => 'ECOCASH', 'destinationAccount' => '', 'productUids' => ''], timeout: 140),
             default => throw new GatewayUnavailable('That way of paying is not available.'),
         };
 
@@ -176,7 +176,7 @@ class StewardPayGateway implements BankGateway
         return [
             'status' => $result,
             'gateway_reference' => is_string($reference) ? $reference : null,
-            'error' => $result === 'failed' ? self::friendly($status, $error) : null,
+            'error' => $result === 'failed' ? self::friendly($status, $error, $attempt->method, is_numeric($answer['seconds'] ?? null) ? (float) $answer['seconds'] : null) : null,
             'raw' => $answer,
         ];
     }
@@ -268,8 +268,16 @@ class StewardPayGateway implements BankGateway
         ];
     }
 
-    private static function friendly(string $status, ?string $error): string
+    private static function friendly(string $status, ?string $error, ?string $method = null, ?float $seconds = null): string
     {
+        // The bank's whole answer when EcoCash says no is "Transaction failed": it does not pass on why.
+        // How long the bank took tells the two cases apart: a prompt takes a person many seconds to answer.
+        if ($method === 'ecocash' && in_array(trim((string) $error), ['Transaction failed', ''], true) && $status === 'FAILED') {
+            return $seconds !== null && $seconds < 12
+                ? "EcoCash refused the request in {$seconds} s, before any prompt reached the phone. This is on the bank's EcoCash side or the number (not registered for EcoCash, or no wallet in this currency). Please pay another way."
+                : 'EcoCash did not approve the payment. Check the number has enough balance in this currency and that the prompt on the phone was approved with the PIN.';
+        }
+
         return match ($status) {
             'CANCELLED' => 'The payment was cancelled.',
             'EXPIRED' => 'The payment was not completed in time.',

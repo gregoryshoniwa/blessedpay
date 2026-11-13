@@ -3,6 +3,7 @@
 use App\Http\Controllers\Console\ActivityController;
 use App\Http\Controllers\Console\ApiLogController;
 use App\Http\Controllers\Console\AuthController;
+use App\Http\Controllers\Console\ChargesController;
 use App\Http\Controllers\Console\CompanyController;
 use App\Http\Controllers\Console\PaymentController;
 use App\Http\Controllers\Console\TeamController;
@@ -67,6 +68,8 @@ Route::prefix('console-api')->group(function () {
 
         Route::get('activity', [ActivityController::class, 'index']);
         Route::get('api-log', [ApiLogController::class, 'index']);
+        Route::get('charges', [ChargesController::class, 'show']);
+        Route::put('charges', [ChargesController::class, 'update']);
         Route::get('try/hook/{token}', [TryController::class, 'received']);
     });
 });

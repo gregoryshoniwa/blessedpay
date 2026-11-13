@@ -153,14 +153,14 @@ async function copy(text, what) {
                         <input id="website" v-model.trim="form.website" class="field" type="url" placeholder="https://" :disabled="!can('company.edit')" />
                     </div>
                     <fieldset class="grid gap-2" :disabled="!can('company.edit')">
-                        <legend class="label">Who pays the bank's {{ company.fee.percent }}% processing fee?</legend>
+                        <legend class="label">Who pays the processing fee? <router-link to="/charges" class="link font-normal">See the charges</router-link></legend>
                         <label class="flex cursor-pointer items-start gap-3 border p-3.5" :class="form.fee_bearer === 'merchant' ? 'border-ink bg-[#fffbf3] outline outline-1 outline-ink' : 'border-[#c9c6bd]'">
                             <input v-model="form.fee_bearer" type="radio" value="merchant" class="mt-1 size-5 flex-none accent-ink" />
-                            <span><strong class="font-semibold">{{ company.name }} absorbs it</strong><span class="block text-sm text-[#454545]">Shoppers pay exactly the order total. The bank keeps its fee from what you receive.</span></span>
+                            <span><strong class="font-semibold">{{ company.name }} absorbs it</strong><span class="block text-sm text-[#454545]">Shoppers pay exactly the order total. The fee comes out of what you receive.</span></span>
                         </label>
                         <label class="flex cursor-pointer items-start gap-3 border p-3.5" :class="form.fee_bearer === 'customer' ? 'border-ink bg-[#fffbf3] outline outline-1 outline-ink' : 'border-[#c9c6bd]'">
                             <input v-model="form.fee_bearer" type="radio" value="customer" class="mt-1 size-5 flex-none accent-ink" />
-                            <span><strong class="font-semibold">The shopper pays it</strong><span class="block text-sm text-[#454545]">A "Processing fee" line is added at the checkout (at least {{ company.fee.minimum.toFixed(2) }}), so you receive the full order total. Applies to new payments.</span></span>
+                            <span><strong class="font-semibold">The shopper pays it</strong><span class="block text-sm text-[#454545]">The fee for the way of paying they choose is added at the checkout, so you receive the full order total. Applies to new payments.</span></span>
                         </label>
                     </fieldset>
                     <div>

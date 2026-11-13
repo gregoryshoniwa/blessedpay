@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Payment;
+use App\Services\Fees;
 use App\Services\Gateways\Gateways;
 use App\Services\Gateways\GatewayUnavailable;
 use App\Services\PaymentService;
@@ -143,7 +144,12 @@ class PayPageController extends Controller
                 'paid_with' => $payment->method,
             ],
             'merchant' => ['name' => $payment->company->name],
-            'methods' => $payment->isFinal() ? [] : Gateways::get($payment->gateway)->methods($payment),
+            // Each way of paying with what it would cost: the fee on top differs by method.
+            'methods' => $payment->isFinal() ? [] : collect(Gateways::get($payment->gateway)->methods($payment))->map(function (array $m) use ($payment) {
+                $quote = Fees::quote($payment->amount, $payment->currency, $m['id'], $payment->company->fee_bearer ?? 'merchant');
+
+                return $m + ['fee' => $quote['fee'], 'total' => $quote['charged']];
+            })->all(),
             'attempt' => $attempt ? [
                 'method' => $attempt->method,
                 'status' => $attempt->status,

@@ -6,7 +6,8 @@
 
 @php
     $money = fn ($amount) => number_format((float) $amount, 2);
-    [$whole, $cents] = explode('.', $money($payment->charged()));
+    // The order amount: any fee on top depends on the way of paying and is shown beside the form.
+    [$whole, $cents] = explode('.', $money($payment->amount));
     // Two letters for the company's tile: "Bless-Luxe" → BL, "Kopje" → KO.
     $words = preg_split('/[^\pL\pN]+/u', $payment->company->name, -1, PREG_SPLIT_NO_EMPTY);
     $initials = mb_strtoupper(count($words) > 1 ? mb_substr($words[0], 0, 1).mb_substr($words[1], 0, 1) : mb_substr($words[0] ?? 'B', 0, 2));
@@ -46,15 +47,6 @@
                     </p>
                     <p class="mt-3 font-mono text-sm text-[#a8a8a8]">Reference {{ $payment->reference }}</p>
 
-                    @if ((float) $payment->fee > 0)
-                        <dl class="mt-6 grid max-w-xs grid-cols-[1fr_auto] gap-x-6 gap-y-1 border-t border-white/15 pt-4 text-[15px] text-haze">
-                            <dt>Order total</dt>
-                            <dd class="tabular-nums">{{ $payment->currency }} {{ $money($payment->amount) }}</dd>
-                            <dt>Processing fee</dt>
-                            <dd class="tabular-nums">{{ $payment->currency }} {{ $money($payment->fee) }}</dd>
-                        </dl>
-                    @endif
-
                     <ul class="mt-7 grid max-w-md gap-2.5 text-[15px] text-haze">
                         <li class="flex gap-3">
                             <svg aria-hidden="true" class="mt-0.5 size-5 flex-none text-gold-bright" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6l8-3z" /><path d="M8.5 12l2.5 2.5 4.5-5" /></svg>
@@ -74,7 +66,7 @@
         </section>
 
         <div class="flex min-h-screen flex-col bg-paper lg:bg-white">
-            <header class="bg-black px-4 py-2 lg:hidden">@include('partials.brand')</header>
+            <header class="bg-black px-4 py-1 lg:hidden">@include('partials.brand')</header>
 
             <main class="flex flex-1 flex-col justify-center px-3 py-3 sm:px-6 sm:py-5 lg:px-12 xl:px-16">
                 <div id="checkout" class="mx-auto w-full max-w-[460px]"></div>

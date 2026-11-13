@@ -7,6 +7,7 @@ use App\Models\ActivityLog;
 use App\Models\Company;
 use App\Models\Payment;
 use App\Services\CallbackSender;
+use App\Services\Fees;
 use App\Services\PaymentService;
 use App\Support\Diagnosis;
 use App\Support\Phone;
@@ -246,6 +247,10 @@ class PaymentController extends Controller
             'reference' => $p->reference,
             'amount' => $p->amount,
             'fee' => $p->fee,
+            'bank_fee' => $p->bank_fee,
+            'margin' => $p->margin,
+            'bank_credits' => $p->bank_fee !== null ? Fees::money((float) $p->charged() - (float) $p->bank_fee) : null,
+            'company_keeps' => $p->bank_fee !== null ? Fees::money((float) $p->charged() - (float) $p->bank_fee - (float) $p->margin) : null,
             'charged' => $p->charged(),
             'currency' => $p->currency,
             'status' => $p->status,

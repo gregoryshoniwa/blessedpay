@@ -156,7 +156,7 @@ async function copyTrail() {
                     <dt class="text-mute">Company</dt>
                     <dd><router-link :to="`/companies/${payment.company.id}`" class="link">{{ payment.company.name }}</router-link></dd>
                     <template v-if="Number(payment.fee) > 0">
-                        <dt class="text-mute">Shopper paid</dt>
+                        <dt class="text-mute">Shopper {{ payment.status === 'paid' ? 'paid' : 'pays' }}</dt>
                         <dd>{{ money(payment.charged, payment.currency) }} <span class="text-sm text-mute">(includes {{ money(payment.fee, payment.currency) }} processing fee)</span></dd>
                     </template>
                     <dt class="text-mute">Payment id</dt>
@@ -196,6 +196,23 @@ async function copyTrail() {
                         <dd class="break-all font-mono text-sm">{{ payment.idempotency_key }}</dd>
                     </template>
                 </dl>
+                <!-- Where the money went. "The bank credits" is the figure to find on the bank statement. -->
+                <template v-if="payment.bank_fee !== null">
+                    <h3 class="mb-2 mt-6 text-sm font-semibold">Where the money went</h3>
+                    <dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-6 border border-line text-[15px] [&>*]:border-b [&>*]:border-line [&>*]:px-3 [&>*]:py-2 [&>dd]:text-right [&>dd]:tabular-nums">
+                        <dt>The shopper paid</dt>
+                        <dd>{{ money(payment.charged, payment.currency) }}</dd>
+                        <dt>The bank kept its fee</dt>
+                        <dd>− {{ money(payment.bank_fee, payment.currency) }}</dd>
+                        <dt class="bg-paper font-semibold">The bank credits the account</dt>
+                        <dd class="bg-paper font-semibold">{{ money(payment.bank_credits, payment.currency) }}</dd>
+                        <dt>Gateway margin (gateway profit)</dt>
+                        <dd>− {{ money(payment.margin, payment.currency) }}</dd>
+                        <dt class="!border-b-0 font-semibold">{{ payment.company.name }} keeps</dt>
+                        <dd class="!border-b-0 font-semibold">{{ money(payment.company_keeps, payment.currency) }}</dd>
+                    </dl>
+                    <p class="mt-1.5 text-sm text-mute">Worked out from the charges in force when it was paid. <router-link to="/charges" class="link">Charges</router-link></p>
+                </template>
                 <template v-if="payment.attempts.length">
                     <h3 class="mb-2 mt-6 text-sm font-semibold">Tries at paying</h3>
                     <ul class="grid gap-px border border-line bg-line text-sm">
@@ -256,7 +273,7 @@ async function copyTrail() {
                         <div class="min-w-0" :class="event.level === 'error' ? 'bg-[#fdf3f1] px-3 py-2.5' : ''">
                             <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                                 <span class="px-2 py-0.5 font-semibold" :class="ACTORS[event.actor]?.[1]">{{ ACTORS[event.actor]?.[0] || event.actor }}</span>
-                                <span v-if="event.type.startsWith('payment.')" class="font-semibold">FINAL RESULT</span>
+                                <span v-if="['payment.paid', 'payment.failed', 'payment.cancelled'].includes(event.type)" class="font-semibold">FINAL RESULT</span>
                                 <span v-else-if="event.level === 'error'" class="font-semibold text-[#9b1c1c]">FAILED HERE</span>
                                 <span v-else-if="event.level === 'warn'" class="font-semibold">CHECK THIS</span>
                                 <span v-if="event.try" class="text-mute">Try {{ event.try.n }}</span>

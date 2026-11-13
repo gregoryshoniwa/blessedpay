@@ -25,7 +25,11 @@ const pay = computed(() => state.payment);
 const money = (amount) => `${pay.value.currency} ${Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const chosen = computed(() => state.methods.find((m) => m.id === method.value));
 const needsPhone = computed(() => chosen.value?.needs.includes('phone'));
-const hasFee = computed(() => Number(pay.value.fee) > 0);
+// Any fee on top depends on the way of paying, so while choosing, the total is the chosen method's.
+const choosing = computed(() => view.value === 'choose' && !!chosen.value);
+const due = computed(() => (choosing.value ? chosen.value.total : pay.value.charged));
+const dueFee = computed(() => (choosing.value ? chosen.value.fee : pay.value.fee));
+const hasFee = computed(() => Number(dueFee.value) > 0);
 
 // The marks of what we accept. The checkout is white so they sit on it as their owners draw them (never recoloured).
 const MARKS = {
@@ -313,8 +317,8 @@ const waitingCopy = computed(() =>
                     <p v-if="pay.description" class="truncate text-sm text-haze">{{ pay.description }}</p>
                 </div>
                 <div class="flex-none text-right">
-                    <p class="font-display text-2xl font-bold leading-none tabular-nums">{{ money(pay.charged) }}</p>
-                    <p v-if="hasFee" class="mt-1 text-xs text-[#a8a8a8]">{{ money(pay.amount) }} + {{ money(pay.fee) }} fee</p>
+                    <p class="font-display text-2xl font-bold leading-none tabular-nums">{{ money(due) }}</p>
+                    <p v-if="hasFee" class="mt-1 text-xs text-[#a8a8a8]">{{ money(pay.amount) }} + {{ money(dueFee) }} fee</p>
                 </div>
             </div>
         </header>
@@ -370,8 +374,11 @@ const waitingCopy = computed(() =>
                     <template v-if="busy">{{ method === 'ecocash' ? 'Sending…' : 'One moment…' }}</template>
                     <template v-else-if="method === 'bank'">Continue with TN CyberTech Bank</template>
                     <template v-else-if="method === 'card'">Enter card details</template>
-                    <template v-else>Pay {{ money(pay.charged) }}</template>
+                    <template v-else>Pay {{ money(due) }}</template>
                 </button>
+                <p v-if="hasFee" class="mt-2 text-center text-[13px] text-mute">
+                    You pay <strong class="font-semibold text-ink">{{ money(due) }}</strong>: {{ money(pay.amount) }} + {{ money(dueFee) }} processing fee
+                </p>
             </form>
 
             <!-- EcoCash prompt sent / card being confirmed -->
@@ -404,7 +411,20 @@ const waitingCopy = computed(() =>
                     The card form could not be shown here.
                     <a :href="card.url" target="_blank" rel="noopener" class="link font-semibold">Open the bank's card page in a new tab</a>, then come back: this page updates by itself.
                 </div>
-                <div id="bp-card" class="mt-3 min-h-[420px] border border-line bg-white"></div>
+                <div class="mt-3 border border-line">
+                    <div class="flex items-center justify-between gap-3 border-b border-line bg-paper px-3.5 py-2.5">
+                        <span class="flex items-center gap-2 text-sm font-medium">
+                            <svg aria-hidden="true" class="size-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
+                            Paying {{ money(pay.charged) }} · secure bank form
+                        </span>
+                        <span class="flex flex-none items-center gap-2">
+                            <img src="/pay/visa.svg" alt="Visa" width="38" class="w-[38px] mix-blend-multiply" />
+                            <img src="/pay/mastercard.svg" alt="Mastercard" width="28" class="w-7" />
+                        </span>
+                    </div>
+                    <!-- Mastercard's form starts with an empty band; it is tucked up under the bar above. -->
+                    <div class="overflow-hidden bg-white px-3.5 pb-2"><div id="bp-card" class="-mt-12 min-h-[420px]"></div></div>
+                </div>
                 <button type="button" class="link mt-3 min-h-11 text-sm" @click="another">Choose another way to pay</button>
             </div>
 

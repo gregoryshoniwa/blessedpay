@@ -42,8 +42,8 @@ class PaymentService
                 'mode' => $mode,
                 'reference' => $data['reference'],
                 'amount' => $data['amount'],
-                // The shopper pays the bank's fee on top only when the company has chosen that.
-                'fee' => $company->fee_bearer === 'customer' ? Fees::onTop($data['amount']) : '0.00',
+                // Any fee on top depends on the way of paying: it is set when the shopper chooses one (startAttempt).
+                'fee' => '0.00',
                 'currency' => strtoupper($data['currency']),
                 'status' => 'pending',
                 'gateway' => Gateways::forMode($mode)->id(),
@@ -63,7 +63,7 @@ class PaymentService
         $payment->log('payment.created', "Payment created for {$payment->currency} {$payment->amount} ({$mode} key)", [
             'reference' => $payment->reference,
             'amount' => $payment->amount,
-            'fee_on_top' => $payment->fee,
+            'fees_paid_by' => $company->fee_bearer === 'customer' ? 'the shopper, on top (set when they choose how to pay)' : 'the company, from what it receives',
             'currency' => $payment->currency,
             'description' => $payment->description,
             'return_url' => $payment->return_url,
@@ -98,8 +98,11 @@ class PaymentService
             throw new GatewayUnavailable('Enter a Zimbabwe mobile number, for example 077 123 4567.');
         }
 
-        $attempt = DB::transaction(function () use ($payment, $method, $phone) {
+        $quote = Fees::quote($payment->amount, $payment->currency, $method, $payment->company->fee_bearer ?? 'merchant');
+
+        $attempt = DB::transaction(function () use ($payment, $method, $phone, $quote) {
             Payment::whereKey($payment->id)->lockForUpdate()->first();
+            $payment->forceFill(['fee' => $quote['fee']])->save(); // what this way of paying adds on top
 
             // One try at a time. An abandoned try is still watched (see refresh):
             // a shopper can approve an old EcoCash prompt after moving on.
@@ -119,6 +122,10 @@ class PaymentService
             'our_reference' => $attempt->reference,
             'amount' => $attempt->amount,
             'phone' => $attempt->phone,
+            'order_amount' => $quote['amount'],
+            'fee_on_top' => $quote['fee'],
+            'of_which_bank_fee' => $quote['bank_fee'],
+            'of_which_gateway_margin' => $quote['margin'],
         ], actor: 'shopper', attempt: $attempt);
 
         if ($gateway->beginsSlowly($method)) {
@@ -205,6 +212,9 @@ class PaymentService
             return;
         }
 
+        // An earlier try (made with another way of paying, at another total) may be the one that was paid.
+        $payment->forceFill(['fee' => Fees::money((float) $attempt->amount - (float) $payment->amount)])->save();
+
         $this->settle($payment, 'paid', [
             'gateway_reference' => $result['gateway_reference'] ?? $attempt->gateway_uid,
             'method' => $attempt->method,
@@ -243,6 +253,7 @@ class PaymentService
                 'gateway_reference' => $details['gateway_reference'] ?? $fresh->gateway_reference,
                 'method' => $details['method'] ?? $fresh->method,
                 'paid_at' => $status === 'paid' ? now() : null,
+                ...($status === 'paid' ? self::split($fresh, $details['method'] ?? $fresh->method) : ['bank_fee' => null, 'margin' => null]),
                 'finished_at' => now(),
             ])->save();
 
@@ -301,6 +312,23 @@ class PaymentService
         }
 
         return $payment;
+    }
+
+    /**
+     * Who gets what from a paid payment, by the charges in force now and the
+     * way of paying actually used. Kept on the payment so it never moves when
+     * the charges are changed later.
+     */
+    private static function split(Payment $payment, ?string $method): array
+    {
+        $bankFee = Fees::bankCut($payment->charged(), $payment->currency, $method);
+
+        return [
+            'bank_fee' => $bankFee,
+            'margin' => (float) $payment->fee > 0
+                ? Fees::money(max((float) $payment->fee - (float) $bankFee, 0))       // charged on top: what is left after the bank's cut
+                : Fees::margin($payment->amount, $payment->currency),                 // absorbed: taken from what the company receives
+        ];
     }
 
     /** The shopper gave up. A try already at the bank is still watched. */
