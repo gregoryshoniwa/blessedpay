@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Console;
 
 use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
+use App\Models\Company;
 use App\Models\Payment;
 use App\Services\CallbackSender;
 use App\Services\PaymentService;
@@ -35,6 +36,7 @@ class PaymentController extends Controller
             'failed_week' => $base()->whereIn('status', ['failed', 'cancelled'])->where('created_at', '>=', now()->subDays(7))->count(),
             'callbacks_failed' => $base()->where('callback_status', 'failed')->count(),
             'recent' => $base()->with('company:id,name')->latest('created_at')->limit(8)->get()->map(fn (Payment $p) => self::row($p)),
+            'companies' => $request->user()->isStaff() && $this->companyFilter($request) === null ? $this->perCompany($mode) : null,
         ]);
     }
 
@@ -148,6 +150,34 @@ class PaymentController extends Controller
         ActivityLog::record($request, 'callback.resent', "Sent the callback again for {$payment->reference}", $payment->company_id);
 
         return response()->json(['delivered' => $ok] + $this->show($request, $id)->getData(true));
+    }
+
+    /** Staff only: the same figures as the tiles, one line per company. */
+    private function perCompany(string $mode): array
+    {
+        $base = fn () => Payment::query()->where('mode', $mode);
+        $paid = $base()->where('status', 'paid')->where('paid_at', '>=', now()->startOfMonth())
+            ->selectRaw('company_id, currency, count(*) as n, sum(amount) as total')->groupBy('company_id', 'currency')->get()->groupBy('company_id');
+        $today = $base()->where('status', 'paid')->where('paid_at', '>=', now()->startOfDay())
+            ->selectRaw('company_id, currency, count(*) as n, sum(amount) as total')->groupBy('company_id', 'currency')->get()->groupBy('company_id');
+        $count = fn ($query) => $query->selectRaw('company_id, count(*) as n')->groupBy('company_id')->pluck('n', 'company_id');
+        $all = $count($base());
+        $pending = $count($base()->where('status', 'pending'));
+        $failed = $count($base()->whereIn('status', ['failed', 'cancelled'])->where('created_at', '>=', now()->subDays(7)));
+        $callbacks = $count($base()->where('callback_status', 'failed'));
+        $money = fn ($rows) => collect($rows)->map(fn ($r) => ['currency' => $r->currency, 'count' => (int) $r->n, 'total' => number_format((float) $r->total, 2, '.', '')])->values();
+
+        return Company::orderBy('name')->get(['id', 'name', 'status'])->map(fn (Company $c) => [
+            'id' => $c->id,
+            'name' => $c->name,
+            'status' => $c->status,
+            'paid_today' => $money($today[$c->id] ?? []),
+            'paid_month' => $money($paid[$c->id] ?? []),
+            'transactions' => (int) ($all[$c->id] ?? 0),
+            'pending' => (int) ($pending[$c->id] ?? 0),
+            'failed_week' => (int) ($failed[$c->id] ?? 0),
+            'callbacks_failed' => (int) ($callbacks[$c->id] ?? 0),
+        ])->all();
     }
 
     private function find(Request $request, string $id): Payment

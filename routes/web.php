@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Console\ActivityController;
+use App\Http\Controllers\Console\ApiLogController;
 use App\Http\Controllers\Console\AuthController;
 use App\Http\Controllers\Console\CompanyController;
 use App\Http\Controllers\Console\PaymentController;
@@ -65,6 +66,7 @@ Route::prefix('console-api')->group(function () {
         Route::delete('invitations/{id}', [TeamController::class, 'revokeInvite'])->whereNumber('id');
 
         Route::get('activity', [ActivityController::class, 'index']);
+        Route::get('api-log', [ApiLogController::class, 'index']);
         Route::get('try/hook/{token}', [TryController::class, 'received']);
     });
 });

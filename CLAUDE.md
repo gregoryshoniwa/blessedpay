@@ -60,6 +60,13 @@ The shop lives next door at `../blessluxe` (Laravel 13 + Vue 3 + MySQL). Its `CL
 - **Console** — the menu says "Transactions" (route still `/payments`). The list has status tabs, search (reference, payment id, bank reference, a try's reference, the bank's id, shopper phone), company (staff), dates, way of paying (matches payments where it was *tried*, not only paid), currency, amount range, callback state, order, 10/25/50/100 per page, numbered pages, and totals for the whole filtered set. The detail page shows the finding, the tries, and every step with "Problems only" / "Bank only" views and "Copy all steps" (plain text for an email to the bank).
 - **Full-page checkout** ([pay/show.blade.php](resources/views/pay/show.blade.php)): on wide screens the company, amount and reassurance sit beside the card (server-rendered), over the gold-horizon backdrop (`public/pay/backdrop.jpg`, cut from `globe.png`); on phones the same facts are inside the card. Payment marks live in `public/pay/` (Visa, Mastercard, EcoCash copied from the shop's `public/payments/`, the bank's logo from the bank's own projects) and are always shown on white, never recoloured.
 
+## API log, per-company figures, Try it in live (built 13 Nov 2026, branch `feature/api-log-per-company`)
+
+- **API log** (`api_requests`, [LogApiRequest](app/Http/Middleware/LogApiRequest.php), console page `/console/api-log`): every call to `/api/v1` is kept with the request (headers + body) and our answer in full — including the ones that never became a payment (401, 422), which is where integrations usually go wrong. Only the first 12 characters of the key are kept. A company sees its own calls; staff see every company's and the calls made with an unrecognised key. When a call is about a payment it is also a step in that payment's trail (`api.request` / `api.status`); repeated identical status reads are counted (`repeats`), not stored again. Nothing prunes this table yet.
+- **Staff overview is per company**: a company picker narrows every figure (`?company_id=`), and "By company" lists each company's paid today / this month, pending, failed and failed callbacks. The Transactions and API log pages have the same company filter.
+- **Try it follows the Test / Live switch** (owner's request). With "Live keys" it takes a live key and makes REAL payments through the bank: it shows a warning, needs an "I understand" tick, defaults to 1.00, and never stores the live key (test keys stay in sessionStorage). Don't remove the tick or start remembering live keys.
+- Callbacks record the headers sent and up to 20,000 characters of the company's answer.
+
 ## Commands
 
 ```bash

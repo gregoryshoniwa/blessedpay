@@ -60,7 +60,7 @@ class PaymentService
             return [$this->sameOrFail($this->findByKey($company, $mode, $idempotencyKey), $data), false];
         }
 
-        $payment->log('payment.created', "The company's system asked for {$payment->currency} {$payment->amount} ({$mode} key)", [
+        $payment->log('payment.created', "Payment created for {$payment->currency} {$payment->amount} ({$mode} key)", [
             'reference' => $payment->reference,
             'amount' => $payment->amount,
             'fee_on_top' => $payment->fee,
@@ -71,7 +71,7 @@ class PaymentService
             'idempotency_key' => $idempotencyKey,
             'bank' => $payment->gateway,
             'open_until' => $payment->expires_at?->toIso8601String(),
-        ], actor: 'merchant');
+        ]);
 
         return [$payment, true];
     }

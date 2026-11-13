@@ -95,6 +95,25 @@ class Payment extends Model
         ]);
     }
 
+    /**
+     * The same question got the same answer again: count it on the line it
+     * repeats (the latest of that type, for that try if one is given).
+     */
+    public function logRepeat(string $type, ?PaymentAttempt $attempt = null): bool
+    {
+        $last = $this->events()->where('type', $type)
+            ->when($attempt, fn ($q) => $q->where('attempt_id', $attempt->id))
+            ->reorder()->latest('id')->first();
+
+        if (! $last) {
+            return false;
+        }
+
+        $last->forceFill(['data' => ['repeats' => ($last->data['repeats'] ?? 1) + 1, 'last_asked' => now()->toIso8601String()] + ($last->data ?? [])])->save();
+
+        return true;
+    }
+
     /** What the API and callbacks say about a payment. Never includes secrets. */
     public function toApi(): array
     {

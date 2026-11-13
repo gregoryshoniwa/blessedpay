@@ -50,7 +50,8 @@ class CallbackSender
                 ], $body);
                 $payment->forceFill(['callback_status' => 'delivered'])->save();
                 $payment->log('callback.delivered', "Callback delivered (to the Try it page), attempt {$payment->callback_attempts}",
-                    ['url' => $payment->callback_url, 'sent' => json_decode($body, true)], actor: 'merchant', level: 'ok');
+                    ['request' => 'POST '.$payment->callback_url, 'sent' => ['headers' => ['X-BlessedPay-Event' => $payment->publicId().'.'.$payment->status, 'Content-Type' => 'application/json'], 'body' => json_decode($body, true)], 'received' => 'Accepted by the Try it page'],
+                    actor: 'merchant', level: 'ok');
 
                 return true;
             }
@@ -71,7 +72,7 @@ class CallbackSender
 
             $ok = $response->successful();
             $note = 'HTTP '.$response->status();
-            $answer = mb_substr($response->body(), 0, 1000);
+            $answer = mb_substr($response->body(), 0, 20000);
         } catch (Throwable $e) {
             $ok = false;
             $note = class_basename($e).': '.mb_substr($e->getMessage(), 0, 200);
@@ -83,8 +84,12 @@ class CallbackSender
             ($ok ? "The company's system accepted the callback" : "The company's system did not accept the callback")." ({$note}), attempt {$payment->callback_attempts}",
             array_filter([
                 'url' => $payment->callback_url,
-                'sent' => json_decode($body, true),
-                'event_header' => $payment->publicId().'.'.$payment->status,
+                'request' => 'POST '.$payment->callback_url,
+                'sent' => [
+                    'headers' => ['X-BlessedPay-Event' => $payment->publicId().'.'.$payment->status, 'X-BlessedPay-Signature' => "t={$timestamp},v1=(signed with the company's callback secret)", 'Content-Type' => 'application/json', 'User-Agent' => 'BlessedPay/1.0'],
+                    'body' => json_decode($body, true),
+                ],
+                'http_status' => isset($response) ? $response->status() : null,
                 'result' => $note,
                 'their_answer' => $answer ?? null,
             ], fn ($v) => $v !== null),

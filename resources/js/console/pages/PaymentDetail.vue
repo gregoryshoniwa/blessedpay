@@ -275,14 +275,14 @@ async function copyTrail() {
                                 <div class="mt-2 grid grid-cols-[minmax(0,1fr)] gap-3">
                                     <div v-if="event.data.request || event.data.sent">
                                         <h3 class="mb-1 text-xs font-semibold text-[#454545]">
-                                            {{ event.actor === 'merchant' ? "We sent the company's system" : 'We sent' }}
+                                            {{ event.type.startsWith('api.') ? "The company's system sent" : event.actor === 'merchant' ? "We sent the company's system" : 'We sent' }}
                                             <span v-if="event.data.request" class="font-mono font-normal">{{ event.data.request }}</span>
                                         </h3>
                                         <pre v-if="event.data.sent" class="max-h-80 overflow-auto bg-paper p-3 font-mono text-xs">{{ pretty(event.data.sent) }}</pre>
                                     </div>
                                     <div v-if="event.data.received !== undefined || event.data.their_answer !== undefined || event.data.connection_error">
                                         <h3 class="mb-1 text-xs font-semibold text-[#454545]">
-                                            {{ event.actor === 'merchant' ? 'It answered' : 'The bank answered' }}
+                                            {{ event.type.startsWith('api.') ? 'BlessedPay answered' : event.actor === 'merchant' ? 'It answered' : 'The bank answered' }}
                                             <span v-if="event.data.http_status" class="font-mono font-normal">HTTP {{ event.data.http_status }}</span>
                                         </h3>
                                         <pre v-if="event.data.connection_error" class="overflow-auto bg-ink p-3 font-mono text-xs text-white">No answer: {{ event.data.connection_error }}</pre>

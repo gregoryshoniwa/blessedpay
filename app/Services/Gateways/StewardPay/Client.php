@@ -152,7 +152,7 @@ class Client
     public static function forLog(mixed $data): mixed
     {
         if (! is_array($data)) {
-            return is_string($data) ? mb_substr($data, 0, 2000) : $data;
+            return is_string($data) ? mb_substr($data, 0, 20000) : $data;
         }
 
         $data = self::scrub($data);

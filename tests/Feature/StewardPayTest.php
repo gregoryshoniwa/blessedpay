@@ -402,21 +402,21 @@ class StewardPayTest extends TestCase
 
         // Who did what, in order. Three identical "still pending" answers are ONE line, counted.
         $this->assertSame(
-            ['payment.created', 'checkout.opened', 'attempt.started', 'bank.token', 'bank.request', 'bank.check', 'bank.check', 'attempt.failed'],
+            ['payment.created', 'api.request', 'checkout.opened', 'attempt.started', 'bank.token', 'bank.request', 'bank.check', 'bank.check', 'attempt.failed'],
             $events->pluck('type')->all(),
         );
-        $this->assertSame(['merchant', 'shopper', 'shopper', 'bank', 'bank', 'bank', 'bank', 'bank'], $events->pluck('actor')->all());
-        $this->assertSame(3, $events[5]['data']['repeats']);
-        $this->assertSame('error', $events[6]['level']);
+        $this->assertSame(['system', 'merchant', 'shopper', 'shopper', 'bank', 'bank', 'bank', 'bank', 'bank'], $events->pluck('actor')->all());
+        $this->assertSame(3, $events[6]['data']['repeats']);
+        $this->assertSame('error', $events[7]['level']);
 
         // What was sent and what came back are both there, with how long it took…
-        $start = $events[4];
+        $start = $events[5];
         $this->assertSame('POST /merchant/sdk/action', $start['data']['request']);
         $this->assertSame('48.00', $start['data']['sent']['amount']);
         $this->assertSame(200, $start['data']['http_status']);
         $this->assertSame('PENDING', $start['data']['received']['body']['status']);
         $this->assertIsInt($start['ms']);
-        $this->assertSame('Do not honour', $events[6]['data']['received']['body']['errorMessage']);
+        $this->assertSame('Do not honour', $events[7]['data']['received']['body']['errorMessage']);
 
         // …but nothing that works like a password.
         $all = json_encode($payment);
@@ -474,7 +474,8 @@ class StewardPayTest extends TestCase
         $callback = collect($payment['events'])->firstWhere('type', 'callback.failed');
         $this->assertSame('merchant', $callback['actor']);
         $this->assertStringContainsString('500 Server Error', $callback['data']['their_answer']);
-        $this->assertSame('payment.paid', $callback['data']['sent']['event']);
+        $this->assertSame('payment.paid', $callback['data']['sent']['body']['event']);
+        $this->assertSame(500, $callback['data']['http_status']);
     }
 
     public function test_transactions_can_be_filtered_sorted_and_paged(): void
@@ -507,5 +508,46 @@ class StewardPayTest extends TestCase
         $second = $list(['per_page' => 10, 'sort' => 'oldest', 'page' => 1]);
         $this->assertSame([1, 3, 1], [$second->json('from'), $second->json('to'), $second->json('pages')]);
         $this->actingAs($staff)->getJson('/console-api/payments?method=cheque')->assertStatus(422);
+    }
+
+    public function test_the_api_log_keeps_each_request_and_answer_in_full_per_company(): void
+    {
+        $this->bank([]);
+        $id = $this->payment(['reference' => 'LOG-1']);
+        foreach (range(1, 3) as $i) {
+            $this->withToken($this->live)->getJson("/api/v1/payments/{$id}")->assertOk(); // a shop polling
+        }
+        $this->withToken($this->live)->postJson('/api/v1/payments', ['amount' => '-1', 'currency' => 'USD'])->assertStatus(422); // never became a payment
+        $this->withToken('sk_live_wrong')->getJson("/api/v1/payments/{$id}")->assertStatus(401);
+
+        $other = Company::create(['name' => 'Kopje', 'slug' => 'kopje', 'status' => 'active', 'callback_secret' => 'x']);
+        $staff = User::factory()->create(['company_id' => null, 'role' => 'support', 'status' => 'active']);
+        $outsider = User::factory()->create(['company_id' => $other->id, 'role' => 'owner', 'status' => 'active']);
+        $owner = User::factory()->create(['company_id' => Company::where('slug', 'blessluxe')->value('id'), 'role' => 'developer', 'status' => 'active']);
+
+        $log = $this->actingAs($staff)->getJson('/console-api/api-log?mode=live')->assertOk();
+        $this->assertSame([401, 422, 200, 201], $log->json('requests.*.status')); // newest first; three identical reads are one line
+        $this->assertSame(3, $log->json('requests.2.repeats'));
+        $this->assertNull($log->json('requests.0.company'));
+
+        $created = $log->json('requests.3');
+        $this->assertSame('LOG-1', $created['request']['body']['reference']);
+        $this->assertSame($id, $created['response']['id']);
+        $this->assertSame($id, $created['payment_id']);
+        $this->assertStringNotContainsString($this->live, json_encode($log->json())); // never the whole key
+        $this->assertSame('The amount field format is invalid.', $log->json('requests.1.response.errors.amount.0'));
+
+        // A company sees its own calls only, and not the ones made with an unknown key.
+        $this->assertSame([422, 200, 201], $this->actingAs($owner)->getJson('/console-api/api-log?mode=live')->json('requests.*.status'));
+        $this->assertSame([], $this->actingAs($outsider)->getJson('/console-api/api-log?mode=live')->json('requests'));
+        $this->assertSame([401, 422], $this->actingAs($staff)->getJson('/console-api/api-log?mode=live&result=failed')->json('requests.*.status'));
+
+        // The same exchange is a step in the payment's own trail, and staff see the figures per company.
+        $step = collect($this->trail($id)->json('payment.events'))->firstWhere('type', 'api.request');
+        $this->assertSame('POST /api/v1/payments', $step['data']['request']);
+        $this->assertSame(201, $step['data']['http_status']);
+        $overview = $this->actingAs($staff)->getJson('/console-api/overview?mode=live')->assertOk();
+        $this->assertSame(['BlessLuxe' => 1, 'Kopje' => 0], collect($overview->json('companies'))->pluck('transactions', 'name')->all());
+        $this->assertNull($this->actingAs($owner)->getJson('/console-api/overview?mode=live')->json('companies'));
     }
 }

@@ -241,7 +241,7 @@ class StewardPayGateway implements BankGateway
         $last = $payment->events()->where('attempt_id', $attempt->id)->where('type', 'bank.check')->reorder()->latest('id')->first();
 
         if ($last && ($last->data['signature'] ?? null) === $signature) {
-            $last->forceFill(['data' => ['repeats' => ($last->data['repeats'] ?? 1) + 1, 'last_asked' => now()->toIso8601String()] + $last->data])->save();
+            $payment->logRepeat('bank.check', $attempt);
 
             return;
         }

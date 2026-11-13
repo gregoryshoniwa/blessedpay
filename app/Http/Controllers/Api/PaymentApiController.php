@@ -57,10 +57,6 @@ class PaymentApiController extends Controller
             return $this->error(409, 'idempotency_conflict', 'This Idempotency-Key was already used for a different payment.');
         }
 
-        if (! $created) {
-            $payment->log('api.repeated', "The company's system sent the same request again (same Idempotency-Key); it was given this same payment", actor: 'merchant');
-        }
-
         return response()->json($payment->toApi(), $created ? 201 : 200);
     }
 

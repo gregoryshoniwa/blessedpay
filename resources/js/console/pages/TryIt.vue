@@ -6,7 +6,9 @@ import PageHead from '../components/PageHead.vue';
 import { can, session } from '../session.js';
 
 // A demo shop for trying the integration. Everything it does goes through the
-// real API with a real TEST key, and every request and response is shown.
+// real API with a real key, and every request and response is shown. It follows
+// the console's Test / Live switch: with "Live keys" it takes REAL payments
+// through the bank, so it asks for a tick first and never remembers the key.
 const route = useRoute();
 const origin = window.location.origin;
 
@@ -26,12 +28,17 @@ const keep = (name, value) => {
 };
 const randomHex = (bytes) => Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, '0')).join('');
 
-const apiKey = ref(saved('bp-try-key', ''));
+const mode = session.mode; // the page is rebuilt when the switch changes
+const live = mode === 'live';
+const KEY_NAME = `YOUR_${mode.toUpperCase()}_KEY`;
+const understood = ref(false);
+
+const apiKey = ref(live ? '' : saved('bp-try-key', ''));
 const hookToken = saved('bp-try-hook', randomHex(16));
 keep('bp-try-hook', hookToken);
 const hookUrl = `${origin}/try/hook/${hookToken}`;
 
-const order = reactive({ item: 'Silk wrap dress', amount: '48.00', currency: 'USD', phone: '' });
+const order = reactive({ item: live ? 'Live test payment' : 'Silk wrap dress', amount: live ? '1.00' : '48.00', currency: 'USD', phone: '' });
 const reference = ref('');
 const newReference = () => (reference.value = 'TRY-' + Date.now().toString(36).toUpperCase());
 newReference();
@@ -44,9 +51,12 @@ const includeKey = ref(false);
 const copied = ref('');
 const seenCallbacks = new Set();
 
-const keyOk = computed(() => /^sk_test_[a-f0-9]{20,}$/.test(apiKey.value.trim()));
-const keyLive = computed(() => apiKey.value.trim().startsWith('sk_live_'));
-const maskedKey = computed(() => (apiKey.value ? apiKey.value.trim().slice(0, 14) + '…' : 'YOUR_TEST_KEY'));
+const keyOk = computed(() => new RegExp(`^sk_${mode}_[a-f0-9]{20,}$`).test(apiKey.value.trim()));
+// A key for the other mode: say so, rather than quietly making the wrong kind of payment.
+const keyWrongMode = computed(() => apiKey.value.trim().startsWith(live ? 'sk_test_' : 'sk_live_'));
+const ready = computed(() => keyOk.value && (!live || understood.value));
+const maskedKey = computed(() => (apiKey.value ? apiKey.value.trim().slice(0, 14) + '…' : KEY_NAME));
+const rememberKey = () => !live && keep('bp-try-key', apiKey.value.trim()); // a live key stays in memory only
 
 function add(entry) {
     log.value.push({ id: log.value.length + 1, at: new Date(), open: true, ...entry });
@@ -54,7 +64,7 @@ function add(entry) {
 const pretty = (value) => (typeof value === 'string' ? value : JSON.stringify(value, null, 2));
 
 // ── cURL: the same commands for a terminal or for Postman's Import ▸ Raw text ──
-const keyFor = (real) => (real ? apiKey.value.trim() : 'YOUR_TEST_KEY');
+const keyFor = (real) => (real ? apiKey.value.trim() : KEY_NAME);
 const createBody = () => ({
     amount: order.amount,
     currency: order.currency,
@@ -105,10 +115,10 @@ async function copy(text, what) {
 function downloadPostman() {
     const header = (key, value) => ({ key, value });
     const collection = {
-        info: { name: 'BlessedPay API', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json', description: 'Start a payment, then read it back. Set api_key to a test key from the console.' },
+        info: { name: 'BlessedPay API', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json', description: 'Start a payment, then read it back. Set api_key to a key from the console.' },
         variable: [
             { key: 'base_url', value: origin },
-            { key: 'api_key', value: includeKey.value && keyOk.value ? apiKey.value.trim() : 'YOUR_TEST_KEY' },
+            { key: 'api_key', value: includeKey.value && keyOk.value ? apiKey.value.trim() : KEY_NAME },
             { key: 'payment_id', value: payment.value?.id || '' },
         ],
         item: [
@@ -161,7 +171,7 @@ async function callApi(title, method, path, body, extraHeaders = {}) {
 
 async function start() {
     problem.value = '';
-    keep('bp-try-key', apiKey.value.trim());
+    rememberKey();
     const { status, data } = await callApi('Your server starts a payment', 'POST', '/api/v1/payments', createBody(), { 'Idempotency-Key': reference.value });
     if (status !== 200 && status !== 201) {
         problem.value = data?.error?.message || data?.message || Object.values(data?.errors || {})[0]?.[0] || 'The payment could not be started. See the log.';
@@ -255,9 +265,9 @@ async function makeKey() {
     busy.value = 'key';
     problem.value = '';
     try {
-        const data = await post(`/companies/${session.user.company.id}/keys`, { name: 'Try it page', mode: 'test' });
+        const data = await post(`/companies/${session.user.company.id}/keys`, { name: 'Try it page', mode });
         apiKey.value = data.plain;
-        keep('bp-try-key', data.plain);
+        rememberKey();
     } catch (e) {
         problem.value = e.message;
     } finally {
@@ -289,21 +299,41 @@ onBeforeUnmount(() => clearTimeout(after));
 </script>
 
 <template>
-    <PageHead title="Try it" sub="A demo shop that uses the real API with a test key. No money moves, and every request and response is shown." />
+    <PageHead
+        title="Try it"
+        :sub="live
+            ? 'A demo shop that uses the real API with a live key. Payments here are real, and every request and response is shown.'
+            : 'A demo shop that uses the real API with a test key. No money moves, and every request and response is shown.'"
+    />
+
+    <div v-if="live" role="note" class="mb-5 border border-line border-l-[6px] border-l-[#9b1c1c] bg-white px-5 py-4">
+        <p class="font-semibold">Live: this takes real money.</p>
+        <p class="mt-1 max-w-[80ch] text-[#333]">
+            A payment made here goes through TN CyberTech Bank and is taken from the card, EcoCash wallet or bank account that pays it, into the company's bank account.
+            The bank's fee applies and there is no refund button yet. Use a small amount. To practise without money, switch to "Test keys" at the bottom of the menu.
+        </p>
+        <label class="mt-3 flex min-h-11 cursor-pointer items-center gap-3 font-medium">
+            <input v-model="understood" type="checkbox" class="size-5 accent-ink" />
+            I understand these are real payments
+        </label>
+    </div>
 
     <div class="grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
         <!-- The demo shop -->
         <section aria-labelledby="shop-h" class="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-5">
             <div class="border border-line bg-white p-5">
-                <h2 id="shop-h" class="text-lg font-semibold">1. Your test key</h2>
-                <label class="label mt-3" for="try-key">Test API key</label>
-                <input id="try-key" v-model.trim="apiKey" class="field font-mono text-sm" type="password" autocomplete="off" placeholder="sk_test_…" aria-describedby="try-key-help" />
-                <p id="try-key-help" class="mt-1.5 text-sm" :class="keyLive ? 'font-medium' : 'text-mute'">
-                    <template v-if="keyLive">That is a live key. This page only works with test keys, so that nothing here can take real money.</template>
+                <h2 id="shop-h" class="text-lg font-semibold">1. Your {{ mode }} key</h2>
+                <label class="label mt-3" for="try-key">{{ live ? 'Live' : 'Test' }} API key</label>
+                <input id="try-key" v-model.trim="apiKey" class="field font-mono text-sm" type="password" autocomplete="off" :placeholder="`sk_${mode}_…`" aria-describedby="try-key-help" />
+                <p id="try-key-help" class="mt-1.5 text-sm" :class="keyWrongMode ? 'font-medium' : 'text-mute'">
+                    <template v-if="keyWrongMode">
+                        That is a {{ live ? 'test' : 'live' }} key, and the console is showing {{ live ? 'Live' : 'Test' }}. Paste a {{ mode }} key, or change the switch at the bottom of the menu.
+                    </template>
+                    <template v-else-if="live">Used for this visit only and never remembered. Keys are shown once when created, on your company page.</template>
                     <template v-else>Kept in this browser tab only. Keys are shown once when created, on your company page.</template>
                 </p>
                 <button v-if="!keyOk && !session.user.is_staff && can('keys.manage')" type="button" class="btn btn-line mt-3" :disabled="busy === 'key'" @click="makeKey">
-                    {{ busy === 'key' ? 'Creating…' : 'Create a test key for this page' }}
+                    {{ busy === 'key' ? 'Creating…' : `Create a ${mode} key for this page` }}
                 </button>
             </div>
 
@@ -338,14 +368,15 @@ onBeforeUnmount(() => clearTimeout(after));
                 <p v-if="problem" role="alert" class="mt-4 border-l-4 border-ink bg-paper px-4 py-3 text-sm font-medium">{{ problem }}</p>
 
                 <div class="mt-5 flex flex-wrap gap-2">
-                    <button type="submit" class="btn btn-gold" :disabled="!keyOk || !!busy">{{ busy === 'popup' ? 'Starting…' : 'Pay in the pop-up' }}</button>
-                    <button type="button" class="btn btn-dark" :disabled="!keyOk || !!busy" @click="payFullPage">{{ busy === 'page' ? 'Starting…' : 'Pay on the full page' }}</button>
+                    <button type="submit" class="btn btn-gold" :disabled="!ready || !!busy">{{ busy === 'popup' ? 'Starting…' : 'Pay in the pop-up' }}</button>
+                    <button type="button" class="btn btn-dark" :disabled="!ready || !!busy" @click="payFullPage">{{ busy === 'page' ? 'Starting…' : 'Pay on the full page' }}</button>
                 </div>
                 <div class="mt-3 flex flex-wrap gap-2">
                     <button type="button" class="btn btn-line" :disabled="!payment || !keyOk || !!busy" @click="checkStatus">{{ busy === 'status' ? 'Asking…' : 'Check the payment again' }}</button>
                     <button type="button" class="btn btn-line" :disabled="!!busy" @click="reset">Start a new order</button>
                 </div>
-                <p class="mt-4 text-sm text-mute">In test mode the checkout shows Approve and Decline buttons in place of the bank. Use the same order reference twice to see that no second payment is made.</p>
+                <p v-if="live" class="mt-4 text-sm text-mute">The checkout talks to the real bank: a real card form, a real EcoCash prompt, a real bank sign-in. Each bank call and its answer is kept in the transaction's steps.</p>
+                <p v-else class="mt-4 text-sm text-mute">In test mode the checkout shows Approve and Decline buttons in place of the bank. Use the same order reference twice to see that no second payment is made.</p>
             </form>
 
             <!-- Copy and paste -->
@@ -354,7 +385,7 @@ onBeforeUnmount(() => clearTimeout(after));
                 <p class="mt-1 text-sm text-mute">In Postman choose Import, then paste a command: it becomes a ready request. Or download the collection, which carries the payment id from the first request into the second.</p>
                 <label class="mt-3 flex min-h-11 cursor-pointer items-center gap-3 text-sm">
                     <input v-model="includeKey" type="checkbox" class="size-5 accent-ink" :disabled="!keyOk" />
-                    Put my test key in what I copy (otherwise it says YOUR_TEST_KEY)
+                    Put my {{ mode }} key in what I copy (otherwise it says {{ KEY_NAME }})
                 </label>
 
                 <div v-for="snippet in [
@@ -381,7 +412,7 @@ onBeforeUnmount(() => clearTimeout(after));
             </div>
 
             <p v-if="!log.length" class="border border-dashed border-[#c9c6bd] bg-white px-5 py-10 text-center text-mute">
-                Nothing yet. Enter a test key and press "Pay in the pop-up". Each request your server would make, and each answer, appears here in order.
+                Nothing yet. Enter a {{ mode }} key and press "Pay in the pop-up". Each request your server would make, and each answer, appears here in order.
             </p>
 
             <ol class="grid grid-cols-[minmax(0,1fr)] gap-3">
@@ -421,10 +452,10 @@ onBeforeUnmount(() => clearTimeout(after));
 
                         <ol v-else-if="entry.events" class="grid gap-2">
                             <li v-for="event in entry.events" :key="event.id" class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3">
-                                <span class="mt-1.5 size-2" :class="event.type.endsWith('failed') ? 'bg-ink' : 'bg-gold'" aria-hidden="true"></span>
+                                <span class="mt-1.5 size-2" :class="event.level === 'error' ? 'bg-[#9b1c1c]' : 'bg-gold'" aria-hidden="true"></span>
                                 <span>{{ event.summary }} <span class="font-mono text-xs text-mute">{{ event.type }}</span></span>
                             </li>
-                            <li><router-link :to="`/payments/${entry.paymentId}`" class="link">Open this payment</router-link></li>
+                            <li><router-link :to="`/payments/${entry.paymentId}`" class="link">See every step with what was sent and received</router-link></li>
                         </ol>
                     </div>
                 </li>

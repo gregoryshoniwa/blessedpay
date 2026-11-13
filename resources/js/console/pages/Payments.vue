@@ -31,6 +31,7 @@ const STATUSES = [
 const extras = ['method', 'currency', 'callback', 'min', 'max'];
 const extraCount = computed(() => extras.filter((f) => filters[f] !== '').length);
 const showMore = ref(extraCount.value > 0);
+const companyName = computed(() => companies.value.find((c) => String(c.id) === String(route.query.company_id || ''))?.name);
 const anyFilter = computed(() => FIELDS.some((f) => !['sort', 'per_page'].includes(f) && filters[f] !== ''));
 
 const clean = (extra = {}) => Object.fromEntries(Object.entries({ ...filters, ...extra }).filter(([, v]) => v !== '' && v != null));
@@ -75,7 +76,7 @@ onMounted(async () => {
 </script>
 
 <template>
-    <PageHead title="Transactions" :sub="`Every payment made with ${session.mode} keys. Open one to see each step it took.`">
+    <PageHead title="Transactions" :sub="`${session.user.is_staff ? (companyName || 'All companies') + ' · every' : 'Every'} payment made with ${session.mode} keys. Open one to see each step it took.`">
         <a v-if="can('payments.export')" :href="exportUrl()" class="btn btn-line">Download as a file</a>
     </PageHead>
 
@@ -99,9 +100,9 @@ onMounted(async () => {
                 <label class="label" for="q">Search</label>
                 <input id="q" v-model.trim="filters.q" class="field" type="search" placeholder="Reference, payment id, bank reference or phone" />
             </div>
-            <div v-if="session.user.is_staff && companies.length > 1" class="min-w-0 flex-[1_1_160px]">
+            <div v-if="session.user.is_staff" class="min-w-0 flex-[1_1_180px]">
                 <label class="label" for="company">Company</label>
-                <select id="company" v-model="filters.company_id" class="field">
+                <select id="company" v-model="filters.company_id" class="field" @change="apply()">
                     <option value="">All companies</option>
                     <option v-for="c in companies" :key="c.id" :value="String(c.id)">{{ c.name }}</option>
                 </select>
