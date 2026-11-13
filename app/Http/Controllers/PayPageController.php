@@ -125,7 +125,8 @@ class PayPageController extends Controller
     /** Everything the checkout page needs. Nothing secret: this is sent to the shopper's browser. */
     private function state(Payment $payment): array
     {
-        $attempt = $payment->attempts()->latest('id')->first();
+        // reorder(): the relation is already sorted oldest-first, and a second sort on top of that would be ignored.
+        $attempt = $payment->attempts()->reorder()->latest('id')->first();
 
         return [
             'payment' => [

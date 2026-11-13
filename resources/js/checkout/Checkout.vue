@@ -27,14 +27,14 @@ const chosen = computed(() => state.methods.find((m) => m.id === method.value));
 const needsPhone = computed(() => chosen.value?.needs.includes('phone'));
 const hasFee = computed(() => Number(pay.value.fee) > 0);
 
-// The marks of what we accept, shown on white as their owners draw them (never recoloured).
+// The marks of what we accept. The checkout is white so they sit on it as their owners draw them (never recoloured).
 const MARKS = {
-    ecocash: [{ src: '/pay/ecocash.svg', alt: 'EcoCash', w: 58 }],
+    ecocash: [{ src: '/pay/ecocash.svg', alt: 'EcoCash', w: 68 }],
     card: [
-        { src: '/pay/visa.svg', alt: 'Visa', w: 40 },
-        { src: '/pay/mastercard.svg', alt: 'Mastercard', w: 30 },
+        { src: '/pay/visa.svg', alt: 'Visa', w: 46 },
+        { src: '/pay/mastercard.svg', alt: 'Mastercard', w: 34 },
     ],
-    bank: [{ src: '/pay/tncb.png', alt: 'TN CyberTech Bank', w: 76 }],
+    bank: [{ src: '/pay/tncb.png', alt: 'TN CyberTech Bank', w: 78 }],
 };
 
 const secondsLeft = computed(() => (pay.value.expires_at ? Math.max(0, Math.round((new Date(pay.value.expires_at).getTime() - now.value) / 1000)) : null));
@@ -300,187 +300,176 @@ const waitingCopy = computed(() =>
 </script>
 
 <template>
-    <div ref="root" class="bp-checkout mx-auto w-full" :class="embedded ? 'max-w-none' : 'max-w-md lg:max-w-none'">
-        <p v-if="pay.mode === 'test'" class="bg-gold px-4 py-1.5 text-center font-mono text-xs font-medium text-black">TEST MODE · NO MONEY MOVES</p>
+    <!-- White, so the payment marks sit on it as their owners draw them. Kept short: it must fit a laptop screen without scrolling. -->
+    <div ref="root" class="bp-checkout mx-auto w-full bg-white text-ink" :class="embedded ? 'max-w-none' : 'border border-line shadow-[0_20px_60px_rgba(0,0,0,0.12)] lg:border-0 lg:shadow-none'">
+        <p v-if="pay.mode === 'test'" class="bg-gold px-4 py-1 text-center font-mono text-xs font-medium text-black" :class="embedded ? '' : 'lg:mb-6'">TEST MODE · NO MONEY MOVES</p>
 
-        <div class="text-white" :class="embedded ? 'min-h-[420px] bg-coal' : 'border border-[#3a3a3a] border-t-2 border-t-gold bg-[#0e0e0e]/92 shadow-[0_30px_80px_rgba(0,0,0,0.7)] backdrop-blur-md'">
-            <!-- Who is being paid, and how much. On a wide full page this sits beside the card instead (see pay/show.blade.php). -->
-            <header class="border-b border-edge px-5 py-5 sm:px-7" :class="embedded ? 'pr-16' : 'lg:hidden'">
-                <div class="flex items-center justify-between gap-3 font-mono text-xs text-[#a8a8a8]">
-                    <span>PAYING</span>
-                    <span class="truncate">REF {{ pay.reference }}</span>
+        <!-- Who is being paid, and how much. On a wide full page this sits in the picture beside the form instead (see pay/show.blade.php). -->
+        <header class="bg-black px-5 py-4 text-white sm:px-6" :class="embedded ? 'pr-14' : 'lg:hidden'">
+            <div class="flex items-end justify-between gap-4">
+                <div class="min-w-0">
+                    <p class="font-mono text-[11px] text-[#a8a8a8]">PAYING · REF {{ pay.reference }}</p>
+                    <h1 class="truncate font-display text-lg font-bold leading-tight">{{ state.merchant.name }}</h1>
+                    <p v-if="pay.description" class="truncate text-sm text-haze">{{ pay.description }}</p>
                 </div>
-                <div class="mt-2 flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
-                    <div class="min-w-0">
-                        <h1 class="truncate font-display text-xl font-bold">{{ state.merchant.name }}</h1>
-                        <p v-if="pay.description" class="truncate text-sm text-haze">{{ pay.description }}</p>
-                    </div>
-                    <p class="font-display text-3xl font-bold leading-none tabular-nums">{{ money(pay.charged) }}</p>
-                </div>
-                <dl v-if="hasFee" class="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 border-t border-edge pt-3 text-sm text-haze">
-                    <dt>Order total</dt>
-                    <dd class="tabular-nums">{{ money(pay.amount) }}</dd>
-                    <dt>Processing fee</dt>
-                    <dd class="tabular-nums">{{ money(pay.fee) }}</dd>
-                </dl>
-            </header>
-
-            <div class="px-5 py-6 sm:px-7" aria-live="polite">
-                <!-- Choose how to pay -->
-                <form v-if="view === 'choose'" novalidate @submit.prevent="submit">
-                    <div class="flex items-center justify-between gap-3">
-                        <h2 class="text-lg font-semibold">How would you like to pay?</h2>
-                        <span v-if="clock" class="font-mono text-sm tabular-nums" :class="secondsLeft < 120 ? 'text-gold-bright' : 'text-[#a8a8a8]'" :title="'Time left to pay'">
-                            <span class="sr-only">Time left to pay: </span>{{ clock }}
-                        </span>
-                    </div>
-
-                    <p v-if="problem" role="alert" class="mt-4 border border-gold px-4 py-3 text-sm">{{ problem }}</p>
-
-                    <fieldset class="mt-4 grid gap-2">
-                        <legend class="sr-only">Ways to pay</legend>
-                        <div v-for="m in state.methods" :key="m.id" class="border" :class="method === m.id ? 'border-gold bg-[#17140c]' : 'border-[#3a3a3a]'">
-                            <label class="flex min-h-16 cursor-pointer items-center gap-3 px-4 py-3">
-                                <input v-model="method" type="radio" name="method" :value="m.id" class="size-5 flex-none accent-[#e0b03a]" />
-                                <span class="min-w-0 flex-1">
-                                    <span class="block font-semibold">{{ m.label }}</span>
-                                    <span class="block text-sm text-[#a8a8a8]">{{ m.hint }}</span>
-                                </span>
-                                <span v-if="MARKS[m.id]" class="flex flex-none gap-1.5">
-                                    <span v-for="mark in MARKS[m.id]" :key="mark.src" class="flex h-10 items-center bg-white px-2">
-                                        <img :src="mark.src" :alt="mark.alt" :width="mark.w" :style="{ width: mark.w + 'px' }" class="max-h-7 object-contain" />
-                                    </span>
-                                </span>
-                            </label>
-
-                            <div v-if="method === m.id && m.needs.includes('phone') && !state.has_phone" class="border-t border-edge px-4 py-4">
-                                <label class="mb-1.5 block text-sm font-medium" :for="`phone-${m.id}`">
-                                    {{ m.id === 'ecocash' ? 'EcoCash number' : 'The mobile number on your bank profile' }}
-                                </label>
-                                <div class="flex">
-                                    <span class="flex items-center border border-r-0 border-[#8a8a8a] bg-black px-3 font-mono text-sm text-haze" aria-hidden="true">+263</span>
-                                    <input
-                                        :id="`phone-${m.id}`"
-                                        v-model.trim="phone"
-                                        type="tel"
-                                        inputmode="tel"
-                                        autocomplete="tel-national"
-                                        placeholder="77 123 4567"
-                                        class="min-h-11 w-full min-w-0 border border-[#8a8a8a] bg-black px-3 py-2.5 text-base text-white placeholder:text-[#6b6b6b]"
-                                    />
-                                </div>
-                            </div>
-                            <p v-else-if="method === m.id && m.needs.includes('phone')" class="border-t border-edge px-4 py-3 text-sm text-haze">Using {{ state.phone }}</p>
-                        </div>
-                    </fieldset>
-
-                    <button type="submit" class="btn btn-gold mt-5 w-full py-4 text-base" :disabled="busy || !chosen">
-                        <template v-if="busy">{{ method === 'ecocash' ? 'Sending…' : 'One moment…' }}</template>
-                        <template v-else-if="method === 'bank'">Continue with TN CyberTech Bank</template>
-                        <template v-else-if="method === 'card'">Enter card details</template>
-                        <template v-else>Pay {{ money(pay.charged) }}</template>
-                    </button>
-
-                    <p class="mt-4 flex gap-2 text-sm text-[#a8a8a8]">
-                        <svg aria-hidden="true" class="mt-0.5 size-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
-                        Payments are processed by TN CyberTech Bank. Card details go straight to the bank, never to {{ state.merchant.name }} or BlessedPay.
-                    </p>
-                </form>
-
-                <!-- EcoCash prompt sent / card being confirmed -->
-                <div v-else-if="view === 'waiting'">
-                    <h2 class="text-lg font-semibold">{{ waitingCopy.title }}</h2>
-                    <ol class="mt-5 grid gap-4">
-                        <li class="flex items-start gap-3">
-                            <svg aria-hidden="true" class="mt-0.5 size-5 flex-none text-gold-bright" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5 9-10" /></svg>
-                            {{ waitingCopy.steps[0] }}
-                        </li>
-                        <li class="flex items-start gap-3 font-semibold">
-                            <span class="relative mt-1 flex size-4 flex-none" aria-hidden="true"><span class="absolute inline-flex size-full bg-gold opacity-60 motion-safe:animate-ping"></span><span class="relative inline-flex size-4 bg-gold"></span></span>
-                            {{ waitingCopy.steps[1] }}
-                        </li>
-                        <li class="flex items-start gap-3 text-[#8a8a8a]">
-                            <span class="mt-1 inline-flex size-4 flex-none border border-[#6b6b6b]" aria-hidden="true"></span>
-                            {{ waitingCopy.steps[2] }}
-                        </li>
-                    </ol>
-                    <p class="mt-6 text-sm text-haze">Keep this page open. It updates by itself.</p>
-                    <button type="button" class="mt-4 min-h-11 text-sm text-haze underline underline-offset-2" @click="another">Choose another way to pay</button>
-                </div>
-
-                <!-- Mastercard's card form -->
-                <div v-else-if="view === 'card'">
-                    <h2 class="text-lg font-semibold">Enter your card details</h2>
-                    <p class="mt-1 text-sm text-haze">This form belongs to the bank. Your card number is never seen by {{ state.merchant.name }} or BlessedPay.</p>
-                    <p v-if="card.loading" class="mt-5 text-haze">Opening the bank's card form…</p>
-                    <div v-if="card.failed" role="alert" class="mt-5 border border-gold px-4 py-3 text-sm">
-                        The card form could not be shown here.
-                        <a :href="card.url" target="_blank" rel="noopener" class="font-semibold text-gold-bright underline underline-offset-2">Open the bank's card page in a new tab</a>, then come back: this page updates by itself.
-                    </div>
-                    <div id="bp-card" class="mt-4 min-h-[420px] bg-white"></div>
-                    <button type="button" class="mt-4 min-h-11 text-sm text-haze underline underline-offset-2" @click="another">Choose another way to pay</button>
-                </div>
-
-                <!-- The bank's own sign-in page, in another tab -->
-                <div v-else-if="view === 'bank'">
-                    <h2 class="text-lg font-semibold">Finish on the bank's page</h2>
-                    <p class="mt-2 text-haze">We opened TN CyberTech Bank in a new tab. Sign in there and approve the payment, then come back here.</p>
-                    <a v-if="bankUrl" :href="bankUrl" target="_blank" rel="noopener" class="btn btn-gold mt-5 w-full py-4 text-base">Open the bank page</a>
-                    <p class="mt-5 flex items-center gap-3 text-sm text-haze">
-                        <span class="relative flex size-3 flex-none" aria-hidden="true"><span class="absolute inline-flex size-full bg-gold opacity-60 motion-safe:animate-ping"></span><span class="relative inline-flex size-3 bg-gold"></span></span>
-                        Waiting for the bank. This page updates by itself.
-                    </p>
-                    <button type="button" class="mt-4 min-h-11 text-sm text-haze underline underline-offset-2" @click="another">Choose another way to pay</button>
-                </div>
-
-                <!-- Test mode: play the bank -->
-                <div v-else-if="view === 'simulate'">
-                    <h2 class="text-lg font-semibold">Test mode: you are the bank</h2>
-                    <p class="mt-2 text-haze">No real {{ chosen?.label || 'payment' }} is made. Choose what the bank should say happened.</p>
-                    <p v-if="problem" role="alert" class="mt-4 border border-gold px-4 py-3 text-sm">{{ problem }}</p>
-                    <div class="mt-5 grid gap-3">
-                        <button type="button" class="btn btn-gold py-3.5" :disabled="busy" @click="simulate('paid')">Approve: payment succeeds</button>
-                        <button type="button" class="btn border-[#6b6b6b] py-3.5 text-white hover:border-white" :disabled="busy" @click="simulate('failed')">Decline: payment fails</button>
-                    </div>
-                    <button type="button" class="mt-4 min-h-11 text-sm text-haze underline underline-offset-2" @click="another">Choose another way to pay</button>
-                </div>
-
-                <!-- Paid -->
-                <div v-else-if="view === 'paid'" class="py-4 text-center">
-                    <svg class="mx-auto size-20 text-gold" viewBox="0 0 80 80" fill="none" stroke="currentColor" role="img" aria-label="Paid">
-                        <rect x="3" y="3" width="74" height="74" stroke-width="3" />
-                        <path class="bp-tick" d="M22 41l12 12 24-27" stroke-width="5" />
-                    </svg>
-                    <h2 class="mt-5 font-display text-2xl font-bold">Payment received</h2>
-                    <p class="mt-1 text-haze">{{ money(pay.charged) }} paid to {{ state.merchant.name }}</p>
-                    <p class="mt-3 font-mono text-xs text-[#a8a8a8]">{{ pay.id }}</p>
-                    <template v-if="!embedded">
-                        <a :href="state.return_url" class="btn btn-gold mt-6 w-full py-4 text-base">Return to {{ state.merchant.name }}</a>
-                        <p v-if="returning" class="mt-3 text-sm text-haze">
-                            Returning in {{ returning }}s ·
-                            <button type="button" class="min-h-11 underline underline-offset-2" @click="stay">stay here</button>
-                        </p>
-                    </template>
-                </div>
-
-                <!-- Failed, cancelled or out of time -->
-                <div v-else class="py-4 text-center">
-                    <svg class="mx-auto size-20 text-[#a8a8a8]" viewBox="0 0 80 80" fill="none" stroke="currentColor" stroke-width="4" aria-hidden="true">
-                        <rect x="3" y="3" width="74" height="74" stroke-width="3" />
-                        <path d="M27 27l26 26M53 27L27 53" />
-                    </svg>
-                    <h2 class="mt-5 font-display text-2xl font-bold">{{ pay.status === 'cancelled' ? 'Payment cancelled' : 'Payment not completed' }}</h2>
-                    <p class="mt-1 text-haze">No money was taken.</p>
-                    <a v-if="!embedded" :href="state.return_url" class="btn btn-gold mt-6 w-full py-4 text-base">Return to {{ state.merchant.name }}</a>
-                    <button v-else type="button" class="btn btn-gold mt-6 w-full py-4 text-base" @click="tell('close')">Close</button>
+                <div class="flex-none text-right">
+                    <p class="font-display text-2xl font-bold leading-none tabular-nums">{{ money(pay.charged) }}</p>
+                    <p v-if="hasFee" class="mt-1 text-xs text-[#a8a8a8]">{{ money(pay.amount) }} + {{ money(pay.fee) }} fee</p>
                 </div>
             </div>
+        </header>
 
-            <footer v-if="!['paid', 'ended'].includes(view)" class="flex flex-wrap items-center justify-between gap-x-4 border-t border-edge px-5 py-3 text-sm text-[#a8a8a8] sm:px-7">
-                <span>Secured by TN CyberTech Bank</span>
-                <button type="button" class="min-h-11 underline underline-offset-2 hover:text-white" :disabled="busy" @click="cancel">Cancel and return</button>
-            </footer>
+        <div class="px-5 py-5 sm:px-6" :class="embedded ? '' : 'lg:px-0 lg:py-0'" aria-live="polite">
+            <!-- Choose how to pay -->
+            <form v-if="view === 'choose'" novalidate @submit.prevent="submit">
+                <div class="flex items-center justify-between gap-3">
+                    <h2 class="font-display text-lg font-bold sm:text-xl">How would you like to pay?</h2>
+                    <span v-if="clock" class="flex-none font-mono text-sm tabular-nums" :class="secondsLeft < 120 ? 'bg-ink px-1.5 text-white' : 'text-mute'" title="Time left to pay">
+                        <span class="sr-only">Time left to pay: </span>{{ clock }}
+                    </span>
+                </div>
+
+                <p v-if="problem" role="alert" class="mt-3 border-l-4 border-[#9b1c1c] bg-[#fdf3f1] px-3 py-2.5 text-sm font-medium">{{ problem }}</p>
+
+                <fieldset class="mt-3 grid gap-2">
+                    <legend class="sr-only">Ways to pay</legend>
+                    <div v-for="m in state.methods" :key="m.id" class="border-2 transition-colors" :class="method === m.id ? 'border-ink bg-[#fffaec]' : 'border-line bg-white hover:border-[#8a8a8a]'">
+                        <label class="flex min-h-14 cursor-pointer items-center gap-3 px-3.5 py-2">
+                            <input v-model="method" type="radio" name="method" :value="m.id" class="size-5 flex-none accent-[#141414]" />
+                            <span class="min-w-0 flex-1">
+                                <span class="block font-semibold leading-tight">{{ m.label }}</span>
+                                <span class="block text-[13px] leading-snug text-mute">{{ m.hint }}</span>
+                            </span>
+                            <span v-if="MARKS[m.id]" class="flex flex-none items-center gap-2.5">
+                                <img v-for="mark in MARKS[m.id]" :key="mark.src" :src="mark.src" :alt="mark.alt" :width="mark.w" :style="{ width: mark.w + 'px' }" class="max-h-7 object-contain mix-blend-multiply" />
+                            </span>
+                        </label>
+
+                        <div v-if="method === m.id && m.needs.includes('phone') && !state.has_phone" class="px-3.5 pb-3">
+                            <label class="mb-1 block text-[13px] font-medium" :for="`phone-${m.id}`">
+                                {{ m.id === 'ecocash' ? 'EcoCash number' : 'The mobile number on your bank profile' }}
+                            </label>
+                            <div class="flex">
+                                <span class="flex items-center border border-r-0 border-[#8a8a8a] bg-paper px-3 font-mono text-sm" aria-hidden="true">+263</span>
+                                <input
+                                    :id="`phone-${m.id}`"
+                                    v-model.trim="phone"
+                                    type="tel"
+                                    inputmode="tel"
+                                    autocomplete="tel-national"
+                                    placeholder="77 123 4567"
+                                    class="min-h-11 w-full min-w-0 border border-[#8a8a8a] bg-white px-3 py-2 text-base text-ink placeholder:text-[#8a8a8a]"
+                                />
+                            </div>
+                        </div>
+                        <p v-else-if="method === m.id && m.needs.includes('phone')" class="px-3.5 pb-3 text-sm text-mute">Using {{ state.phone }}</p>
+                    </div>
+                </fieldset>
+
+                <button type="submit" class="btn btn-gold mt-4 w-full py-3.5 text-base" :disabled="busy || !chosen">
+                    <template v-if="busy">{{ method === 'ecocash' ? 'Sending…' : 'One moment…' }}</template>
+                    <template v-else-if="method === 'bank'">Continue with TN CyberTech Bank</template>
+                    <template v-else-if="method === 'card'">Enter card details</template>
+                    <template v-else>Pay {{ money(pay.charged) }}</template>
+                </button>
+            </form>
+
+            <!-- EcoCash prompt sent / card being confirmed -->
+            <div v-else-if="view === 'waiting'">
+                <h2 class="font-display text-xl font-bold">{{ waitingCopy.title }}</h2>
+                <ol class="mt-5 grid gap-4">
+                    <li class="flex items-start gap-3">
+                        <span class="mt-0.5 flex size-5 flex-none items-center justify-center bg-gold text-xs font-bold text-black" aria-hidden="true">✓</span>
+                        {{ waitingCopy.steps[0] }}
+                    </li>
+                    <li class="flex items-start gap-3 font-semibold">
+                        <span class="relative mt-1 flex size-4 flex-none" aria-hidden="true"><span class="absolute inline-flex size-full bg-gold opacity-60 motion-safe:animate-ping"></span><span class="relative inline-flex size-4 bg-gold"></span></span>
+                        {{ waitingCopy.steps[1] }}
+                    </li>
+                    <li class="flex items-start gap-3 text-mute">
+                        <span class="mt-1 inline-flex size-4 flex-none border border-[#8a8a8a]" aria-hidden="true"></span>
+                        {{ waitingCopy.steps[2] }}
+                    </li>
+                </ol>
+                <p class="mt-6 text-sm text-mute">Keep this page open. It updates by itself.</p>
+                <button type="button" class="link mt-3 min-h-11 text-sm" @click="another">Choose another way to pay</button>
+            </div>
+
+            <!-- Mastercard's card form -->
+            <div v-else-if="view === 'card'">
+                <h2 class="font-display text-xl font-bold">Enter your card details</h2>
+                <p class="mt-1 text-sm text-mute">This form belongs to the bank. Your card number is never seen by {{ state.merchant.name }} or BlessedPay.</p>
+                <p v-if="card.loading" class="mt-4 text-mute">Opening the bank's card form…</p>
+                <div v-if="card.failed" role="alert" class="mt-4 border-l-4 border-[#9b1c1c] bg-[#fdf3f1] px-3 py-2.5 text-sm">
+                    The card form could not be shown here.
+                    <a :href="card.url" target="_blank" rel="noopener" class="link font-semibold">Open the bank's card page in a new tab</a>, then come back: this page updates by itself.
+                </div>
+                <div id="bp-card" class="mt-3 min-h-[420px] border border-line bg-white"></div>
+                <button type="button" class="link mt-3 min-h-11 text-sm" @click="another">Choose another way to pay</button>
+            </div>
+
+            <!-- The bank's own sign-in page, in another tab -->
+            <div v-else-if="view === 'bank'">
+                <h2 class="font-display text-xl font-bold">Finish on the bank's page</h2>
+                <p class="mt-2 text-[#333]">We opened TN CyberTech Bank in a new tab. Sign in there and approve the payment, then come back here.</p>
+                <a v-if="bankUrl" :href="bankUrl" target="_blank" rel="noopener" class="btn btn-gold mt-5 w-full py-3.5 text-base">Open the bank page</a>
+                <p class="mt-5 flex items-center gap-3 text-sm text-mute">
+                    <span class="relative flex size-3 flex-none" aria-hidden="true"><span class="absolute inline-flex size-full bg-gold opacity-60 motion-safe:animate-ping"></span><span class="relative inline-flex size-3 bg-gold"></span></span>
+                    Waiting for the bank. This page updates by itself.
+                </p>
+                <button type="button" class="link mt-3 min-h-11 text-sm" @click="another">Choose another way to pay</button>
+            </div>
+
+            <!-- Test mode: play the bank -->
+            <div v-else-if="view === 'simulate'">
+                <h2 class="font-display text-xl font-bold">Test mode: you are the bank</h2>
+                <p class="mt-2 text-[#333]">No real {{ chosen?.label || 'payment' }} is made. Choose what the bank should say happened.</p>
+                <p v-if="problem" role="alert" class="mt-3 border-l-4 border-[#9b1c1c] bg-[#fdf3f1] px-3 py-2.5 text-sm font-medium">{{ problem }}</p>
+                <div class="mt-5 grid gap-3">
+                    <button type="button" class="btn btn-gold py-3.5" :disabled="busy" @click="simulate('paid')">Approve: payment succeeds</button>
+                    <button type="button" class="btn btn-line py-3.5" :disabled="busy" @click="simulate('failed')">Decline: payment fails</button>
+                </div>
+                <button type="button" class="link mt-3 min-h-11 text-sm" @click="another">Choose another way to pay</button>
+            </div>
+
+            <!-- Paid -->
+            <div v-else-if="view === 'paid'" class="py-4 text-center">
+                <svg class="mx-auto size-20" viewBox="0 0 80 80" fill="none" role="img" aria-label="Paid">
+                    <rect width="80" height="80" fill="#e0b03a" />
+                    <path class="bp-tick" d="M22 41l12 12 24-27" stroke="#000" stroke-width="6" />
+                </svg>
+                <h2 class="mt-5 font-display text-2xl font-bold">Payment received</h2>
+                <p class="mt-1 text-[#333]">{{ money(pay.charged) }} paid to {{ state.merchant.name }}</p>
+                <p class="mt-3 font-mono text-xs text-mute">{{ pay.id }}</p>
+                <template v-if="!embedded">
+                    <a :href="state.return_url" class="btn btn-gold mt-6 w-full py-3.5 text-base">Return to {{ state.merchant.name }}</a>
+                    <p v-if="returning" class="mt-3 text-sm text-mute">
+                        Returning in {{ returning }}s ·
+                        <button type="button" class="link min-h-11" @click="stay">stay here</button>
+                    </p>
+                </template>
+            </div>
+
+            <!-- Failed, cancelled or out of time -->
+            <div v-else class="py-4 text-center">
+                <svg class="mx-auto size-20" viewBox="0 0 80 80" fill="none" stroke="#141414" stroke-width="5" aria-hidden="true">
+                    <rect x="2.5" y="2.5" width="75" height="75" stroke-width="3" />
+                    <path d="M27 27l26 26M53 27L27 53" />
+                </svg>
+                <h2 class="mt-5 font-display text-2xl font-bold">{{ pay.status === 'cancelled' ? 'Payment cancelled' : 'Payment not completed' }}</h2>
+                <p class="mt-1 text-[#333]">No money was taken.</p>
+                <a v-if="!embedded" :href="state.return_url" class="btn btn-gold mt-6 w-full py-3.5 text-base">Return to {{ state.merchant.name }}</a>
+                <button v-else type="button" class="btn btn-gold mt-6 w-full py-3.5 text-base" @click="tell('close')">Close</button>
+            </div>
         </div>
+
+        <footer v-if="!['paid', 'ended'].includes(view)" class="flex items-center justify-between gap-x-3 border-t border-line px-5 py-1 text-[13px] text-mute sm:px-6" :class="embedded ? '' : 'lg:mt-5 lg:px-0'">
+            <span class="flex min-w-0 items-center gap-1.5 truncate">
+                <svg aria-hidden="true" class="size-3.5 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
+                Secured by TN CyberTech Bank
+            </span>
+            <button type="button" class="min-h-11 flex-none underline underline-offset-2 hover:text-ink" :disabled="busy" @click="cancel">Cancel and return</button>
+        </footer>
     </div>
 </template>
 

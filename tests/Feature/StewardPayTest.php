@@ -197,7 +197,9 @@ class StewardPayTest extends TestCase
             ->assertJsonPath('attempt.status', 'failed')
             ->assertJsonPath('attempt.error', 'Insufficient funds');
 
-        $this->postJson("/p/{$id}/pay", ['method' => 'card'])->assertOk()->assertJsonPath('next.kind', 'card');
+        // The second try is the one the checkout is told about: not the failed first one again.
+        $this->postJson("/p/{$id}/pay", ['method' => 'card'])->assertOk()->assertJsonPath('next.kind', 'card')
+            ->assertJsonPath('attempt.method', 'card')->assertJsonPath('attempt.status', 'pending')->assertJsonPath('attempt.error', null);
         $this->assertSame(['failed', 'pending'], PaymentAttempt::orderBy('id')->pluck('status')->all());
         Http::assertNotSent(fn (ClientRequest $r) => $r->url() === 'https://shop.test/hooks/pay'); // nothing to tell the shop yet
     }

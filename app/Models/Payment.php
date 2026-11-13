@@ -49,7 +49,7 @@ class Payment extends Model
     /** The try that is in progress right now, if any. */
     public function openAttempt(): ?PaymentAttempt
     {
-        return $this->attempts()->where('status', 'pending')->latest('id')->first();
+        return $this->attempts()->where('status', 'pending')->reorder()->latest('id')->first();
     }
 
     /** What the shopper is actually charged: the amount, plus the fee when they bear it. */
