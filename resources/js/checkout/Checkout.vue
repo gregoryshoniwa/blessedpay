@@ -398,7 +398,11 @@ const waitingCopy = computed(() =>
                         {{ waitingCopy.steps[2] }}
                     </li>
                 </ol>
-                <p class="mt-6 text-sm text-mute">Keep this page open. It updates by itself.</p>
+                <!-- EcoCash names the BANK's merchant on the prompt, not the shop: say so, or a careful shopper cancels it. -->
+                <p v-if="method === 'ecocash'" class="mt-5 border-l-4 border-gold bg-paper px-3 py-2.5 text-sm">
+                    The prompt on your phone will say <strong class="font-semibold">{{ money(pay.charged) }} to STEWARDPAY</strong>. That is TN CyberTech Bank's payment service, taking this payment for {{ state.merchant.name }}.
+                </p>
+                <p class="mt-4 text-sm text-mute">Keep this page open. It updates by itself.</p>
                 <button type="button" class="link mt-3 min-h-11 text-sm" @click="another">Choose another way to pay</button>
             </div>
 
