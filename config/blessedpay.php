@@ -23,6 +23,14 @@ return [
         'minimum' => (float) env('BLESSEDPAY_FEE_MINIMUM', 0.20),
     ],
 
+    /*
+    | The ways of paying the checkout offers, in order: ecocash, card, bank.
+    | "bank" (pay from a TN CyberTech Bank account) is built but switched off
+    | for now at the owner's request (13 Nov 2026): add it back here, or set
+    | BLESSEDPAY_METHODS=ecocash,card,bank, to show it again.
+    */
+    'methods' => array_values(array_filter(array_map('trim', explode(',', (string) env('BLESSEDPAY_METHODS', 'ecocash,card'))))),
+
     // How long a shopper has to finish paying before the payment is closed.
     'payment_minutes' => (int) env('BLESSEDPAY_PAYMENT_MINUTES', 30),
 

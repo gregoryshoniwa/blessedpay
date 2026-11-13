@@ -1,4 +1,5 @@
 <script setup>
+import SelectBox from '../components/SelectBox.vue';
 import { onMounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { del, get, post, put } from '../api.js';
@@ -153,7 +154,7 @@ async function copy(text, what) {
                         <input id="website" v-model.trim="form.website" class="field" type="url" placeholder="https://" :disabled="!can('company.edit')" />
                     </div>
                     <fieldset class="grid gap-2" :disabled="!can('company.edit')">
-                        <legend class="label">Who pays the processing fee? <router-link to="/charges" class="link font-normal">See the charges</router-link></legend>
+                        <legend class="label">Who pays the processing fee? <router-link v-if="can('charges.view')" to="/charges" class="link font-normal">See the charges</router-link></legend>
                         <label class="flex cursor-pointer items-start gap-3 border p-3.5" :class="form.fee_bearer === 'merchant' ? 'border-ink bg-[#fffbf3] outline outline-1 outline-ink' : 'border-[#c9c6bd]'">
                             <input v-model="form.fee_bearer" type="radio" value="merchant" class="mt-1 size-5 flex-none accent-ink" />
                             <span><strong class="font-semibold">{{ company.name }} absorbs it</strong><span class="block text-sm text-[#454545]">Shoppers pay exactly the order total. The fee comes out of what you receive.</span></span>
@@ -204,10 +205,7 @@ async function copy(text, what) {
                     </div>
                     <div>
                         <label class="label" for="key-mode">Kind</label>
-                        <select id="key-mode" v-model="keyForm.mode" class="field">
-                            <option value="test">Test</option>
-                            <option value="live" :disabled="company.status !== 'active'">Live{{ company.status !== 'active' ? ' (after approval)' : '' }}</option>
-                        </select>
+                        <SelectBox id="key-mode" v-model="keyForm.mode" :options="[{ value: 'test', label: 'Test' }, { value: 'live', label: company.status !== 'active' ? 'Live (after approval)' : 'Live', disabled: company.status !== 'active' }]" />
                     </div>
                     <button type="submit" class="btn btn-gold">Create key</button>
                 </form>

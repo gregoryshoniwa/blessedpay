@@ -1,4 +1,5 @@
 <script setup>
+import SelectBox from './SelectBox.vue';
 import { computed, onMounted, ref } from 'vue';
 import { del, get, post, put } from '../api.js';
 import { ago, when } from '../format.js';
@@ -58,8 +59,7 @@ async function run(action, done) {
     }
 }
 
-const changeRole = (user, event) =>
-    run(() => put(`/team/${user.id}`, { role: event.target.value }), `${user.name} is now ${data.value.roles[event.target.value]}.`).then(() => load());
+const changeRole = (user, role) => run(() => put(`/team/${user.id}`, { role }), `${user.name} is now ${data.value.roles[role]}.`).then(() => load());
 const setStatus = (user, status) =>
     run(() => put(`/team/${user.id}`, { status }), status === 'active' ? `${user.name} can sign in again.` : `${user.name} is suspended and signed out.`);
 function remove(user) {
@@ -177,9 +177,7 @@ async function copy() {
                         <td class="px-4 py-3.5">
                             <template v-if="data.can_manage && !user.is_you && user.role !== 'owner'">
                                 <label class="sr-only" :for="`role-${user.id}`">Role for {{ user.name }}</label>
-                                <select :id="`role-${user.id}`" class="field w-auto" :value="user.role" @change="changeRole(user, $event)">
-                                    <option v-for="(label, key) in data.roles" :key="key" :value="key" :disabled="key === 'owner'">{{ label }}</option>
-                                </select>
+                                <SelectBox :id="`role-${user.id}`" fit :model-value="user.role" :options="Object.entries(data.roles).map(([value, label]) => ({ value, label, disabled: value === 'owner' }))" @change="changeRole(user, $event)" />
                             </template>
                             <template v-else>{{ user.role_label }}</template>
                         </td>

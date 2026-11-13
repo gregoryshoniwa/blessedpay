@@ -1,4 +1,5 @@
 <script setup>
+import SelectBox from '../components/SelectBox.vue';
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { get, post } from '../api.js';
@@ -350,10 +351,7 @@ onBeforeUnmount(() => clearTimeout(after));
                     </div>
                     <div>
                         <label class="label" for="try-currency">Currency</label>
-                        <select id="try-currency" v-model="order.currency" class="field">
-                            <option>USD</option>
-                            <option>ZWG</option>
-                        </select>
+                        <SelectBox id="try-currency" v-model="order.currency" :options="['USD', 'ZWG']" />
                     </div>
                     <div>
                         <label class="label" for="try-ref">Order reference</label>

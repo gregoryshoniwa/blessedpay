@@ -18,27 +18,70 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class PaymentController extends Controller
 {
+    /**
+     * The dashboard. Everything that is counted "in the period" follows
+     * ?from= and ?to= (dates; this month so far when neither is given).
+     * What the bank kept and the gateway's profit are for those who may see charges.
+     */
     public function overview(Request $request): JsonResponse
     {
-        $this->need($request, 'payments.view');
+        $user = $this->need($request, 'payments.view');
+        $request->validate(['from' => ['nullable', 'date'], 'to' => ['nullable', 'date', 'after_or_equal:from']]);
         $mode = $request->query('mode') === 'test' ? 'test' : 'live';
+        $from = $request->filled('from') ? $request->date('from')->startOfDay() : ($request->filled('to') ? null : now()->startOfMonth());
+        $to = $request->filled('to') ? $request->date('to')->endOfDay() : null;
+        $charges = $user->may('charges.view');
+
         $base = fn () => $this->scoped($request)->where('mode', $mode);
+        $within = fn (Builder $q, string $column) => $q->when($from, fn ($w) => $w->where($column, '>=', $from))->when($to, fn ($w) => $w->where($column, '<=', $to));
+        $paid = fn () => $within($base()->where('status', 'paid'), 'paid_at');
+        $money = fn ($rows, string $field) => collect($rows)->map(fn ($r) => ['currency' => $r->currency, 'count' => (int) $r->n, 'total' => Fees::money((float) $r->{$field})])->values();
+        $sums = 'count(*) as n, sum(amount) as amount, sum(coalesce(bank_fee, 0)) as bank_fee, sum(coalesce(margin, 0)) as margin';
 
-        $paidToday = $base()->where('status', 'paid')->where('paid_at', '>=', now()->startOfDay())
-            ->selectRaw('currency, count(*) as n, sum(amount) as total')->groupBy('currency')->get();
-        $paidMonth = $base()->where('status', 'paid')->where('paid_at', '>=', now()->startOfMonth())
-            ->selectRaw('currency, count(*) as n, sum(amount) as total')->groupBy('currency')->get();
+        $totals = $paid()->selectRaw("currency, {$sums}")->groupBy('currency')->get();
 
-        return response()->json([
+        $data = [
             'mode' => $mode,
-            'paid_today' => $paidToday->map(fn ($r) => ['currency' => $r->currency, 'count' => (int) $r->n, 'total' => number_format((float) $r->total, 2, '.', '')]),
-            'paid_month' => $paidMonth->map(fn ($r) => ['currency' => $r->currency, 'count' => (int) $r->n, 'total' => number_format((float) $r->total, 2, '.', '')]),
-            'pending' => $base()->where('status', 'pending')->count(),
-            'failed_week' => $base()->whereIn('status', ['failed', 'cancelled'])->where('created_at', '>=', now()->subDays(7))->count(),
+            'period' => ['from' => $from?->toDateString(), 'to' => $to?->toDateString()],
+            'can_see_charges' => $charges,
+            'paid' => $money($totals, 'amount'),
+            'pending' => $base()->where('status', 'pending')->count(), // right now, whatever the period
+            'failed' => $within($base()->whereIn('status', ['failed', 'cancelled']), 'created_at')->count(),
             'callbacks_failed' => $base()->where('callback_status', 'failed')->count(),
-            'recent' => $base()->with('company:id,name')->latest('created_at')->limit(8)->get()->map(fn (Payment $p) => self::row($p)),
-            'companies' => $request->user()->isStaff() && $this->companyFilter($request) === null ? $this->perCompany($mode) : null,
-        ]);
+            'recent' => $base()->with('company:id,name')->latest('created_at')->limit(8)->get()->map(fn (Payment $p) => $this->row($request, $p)),
+            'companies' => null,
+        ];
+
+        if ($charges) {
+            $data['bank_revenue'] = $money($totals, 'bank_fee');
+            $data['gateway_profit'] = $money($totals, 'margin');
+        }
+
+        // Staff looking at every company: the same figures, one line per company.
+        if ($user->isStaff() && $this->companyFilter($request) === null) {
+            $byCompany = $paid()->selectRaw("company_id, currency, {$sums}")->groupBy('company_id', 'currency')->get()->groupBy('company_id');
+            $count = fn ($query) => $query->selectRaw('company_id, count(*) as n')->groupBy('company_id')->pluck('n', 'company_id');
+            $all = $count($base());
+            $pending = $count($base()->where('status', 'pending'));
+            $failed = $count($within($base()->whereIn('status', ['failed', 'cancelled']), 'created_at'));
+            $callbacks = $count($base()->where('callback_status', 'failed'));
+
+            $data['companies'] = Company::orderBy('name')->get(['id', 'name', 'status'])->map(fn (Company $c) => [
+                'id' => $c->id,
+                'name' => $c->name,
+                'status' => $c->status,
+                'paid' => $money($byCompany[$c->id] ?? [], 'amount'),
+                'transactions' => (int) ($all[$c->id] ?? 0),
+                'pending' => (int) ($pending[$c->id] ?? 0),
+                'failed' => (int) ($failed[$c->id] ?? 0),
+                'callbacks_failed' => (int) ($callbacks[$c->id] ?? 0),
+            ] + ($charges ? [
+                'bank_revenue' => $money($byCompany[$c->id] ?? [], 'bank_fee'),
+                'gateway_profit' => $money($byCompany[$c->id] ?? [], 'margin'),
+            ] : []))->all();
+        }
+
+        return response()->json($data);
     }
 
     public function index(Request $request): JsonResponse
@@ -58,22 +101,24 @@ class PaymentController extends Controller
         $page = $query->paginate($perPage);
 
         // What the whole filtered set adds up to, not just this page.
-        $totals = $this->filtered($request)->selectRaw('status, currency, count(*) as n, sum(amount) as total')
+        $totals = $this->filtered($request)->selectRaw('status, currency, count(*) as n, sum(amount) as total, sum(coalesce(bank_fee, 0)) as bank_fee, sum(coalesce(margin, 0)) as margin')
             ->groupBy('status', 'currency')->get();
+        $charges = $request->user()->may('charges.view');
 
         return response()->json([
-            'payments' => collect($page->items())->map(fn (Payment $p) => self::row($p) + ['tries' => (int) $p->attempts_count]),
+            'payments' => collect($page->items())->map(fn (Payment $p) => $this->row($request, $p) + ['tries' => (int) $p->attempts_count]),
             'page' => $page->currentPage(),
             'pages' => $page->lastPage(),
             'per_page' => $perPage,
             'from' => $page->firstItem(),
             'to' => $page->lastItem(),
             'total' => $page->total(),
+            'can_see_charges' => $charges,
             'summary' => [
                 'by_status' => $totals->groupBy('status')->map(fn ($rows) => (int) $rows->sum('n')),
                 'paid' => $totals->where('status', 'paid')->values()->map(fn ($r) => [
                     'currency' => $r->currency, 'count' => (int) $r->n, 'total' => number_format((float) $r->total, 2, '.', ''),
-                ]),
+                ] + ($charges ? ['bank_revenue' => Fees::money((float) $r->bank_fee), 'gateway_profit' => Fees::money((float) $r->margin)] : [])),
             ],
         ]);
     }
@@ -84,15 +129,21 @@ class PaymentController extends Controller
         $query = $this->filtered($request)->with('company:id,name')->latest('created_at');
         ActivityLog::record($request, 'payments.exported', 'Exported payments to a file', $this->companyFilter($request));
 
-        return response()->streamDownload(function () use ($query) {
+        $charges = $request->user()->may('charges.view');
+
+        return response()->streamDownload(function () use ($query, $charges) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['Payment', 'Company', 'Mode', 'Reference', 'Amount', 'Fee on top', 'Currency', 'Status', 'Paid with', 'Bank reference', 'Callback', 'Created', 'Paid', 'Finished']);
-            $query->chunk(500, function ($payments) use ($out) {
+            fputcsv($out, array_merge(
+                ['Payment', 'Company', 'Mode', 'Reference', 'Amount', 'Fee on top', 'Currency', 'Status', 'Paid with', 'Bank reference', 'Callback', 'Created', 'Paid', 'Finished'],
+                $charges ? ['Bank fee', 'Gateway margin'] : [],
+            ));
+            $query->chunk(500, function ($payments) use ($out, $charges) {
                 foreach ($payments as $p) {
                     fputcsv($out, [
                         $p->publicId(), $p->company->name, $p->mode, self::csvSafe($p->reference), $p->amount, $p->fee, $p->currency,
                         $p->status, $p->method, $p->gateway_reference, $p->callback_status,
                         $p->created_at?->toIso8601String(), $p->paid_at?->toIso8601String(), $p->finished_at?->toIso8601String(),
+                        ...($charges ? [$p->bank_fee, $p->margin] : []),
                     ]);
                 }
             });
@@ -105,7 +156,7 @@ class PaymentController extends Controller
         $this->need($request, 'payments.view');
         $payment = $this->find($request, $id);
 
-        return response()->json(['payment' => self::row($payment) + [
+        return response()->json(['payment' => $this->row($request, $payment) + [
             'description' => $payment->description,
             'return_url' => $payment->return_url,
             'callback_url' => $payment->callback_url,
@@ -151,34 +202,6 @@ class PaymentController extends Controller
         ActivityLog::record($request, 'callback.resent', "Sent the callback again for {$payment->reference}", $payment->company_id);
 
         return response()->json(['delivered' => $ok] + $this->show($request, $id)->getData(true));
-    }
-
-    /** Staff only: the same figures as the tiles, one line per company. */
-    private function perCompany(string $mode): array
-    {
-        $base = fn () => Payment::query()->where('mode', $mode);
-        $paid = $base()->where('status', 'paid')->where('paid_at', '>=', now()->startOfMonth())
-            ->selectRaw('company_id, currency, count(*) as n, sum(amount) as total')->groupBy('company_id', 'currency')->get()->groupBy('company_id');
-        $today = $base()->where('status', 'paid')->where('paid_at', '>=', now()->startOfDay())
-            ->selectRaw('company_id, currency, count(*) as n, sum(amount) as total')->groupBy('company_id', 'currency')->get()->groupBy('company_id');
-        $count = fn ($query) => $query->selectRaw('company_id, count(*) as n')->groupBy('company_id')->pluck('n', 'company_id');
-        $all = $count($base());
-        $pending = $count($base()->where('status', 'pending'));
-        $failed = $count($base()->whereIn('status', ['failed', 'cancelled'])->where('created_at', '>=', now()->subDays(7)));
-        $callbacks = $count($base()->where('callback_status', 'failed'));
-        $money = fn ($rows) => collect($rows)->map(fn ($r) => ['currency' => $r->currency, 'count' => (int) $r->n, 'total' => number_format((float) $r->total, 2, '.', '')])->values();
-
-        return Company::orderBy('name')->get(['id', 'name', 'status'])->map(fn (Company $c) => [
-            'id' => $c->id,
-            'name' => $c->name,
-            'status' => $c->status,
-            'paid_today' => $money($today[$c->id] ?? []),
-            'paid_month' => $money($paid[$c->id] ?? []),
-            'transactions' => (int) ($all[$c->id] ?? 0),
-            'pending' => (int) ($pending[$c->id] ?? 0),
-            'failed_week' => (int) ($failed[$c->id] ?? 0),
-            'callbacks_failed' => (int) ($callbacks[$c->id] ?? 0),
-        ])->all();
     }
 
     private function find(Request $request, string $id): Payment
@@ -238,8 +261,10 @@ class PaymentController extends Controller
             });
     }
 
-    private static function row(Payment $p): array
+    private function row(Request $request, Payment $p): array
     {
+        $charges = $request->user()->may('charges.view');
+
         return [
             'id' => $p->publicId(),
             'company' => $p->company ? ['id' => $p->company->id, 'name' => $p->company->name] : null,
@@ -247,10 +272,6 @@ class PaymentController extends Controller
             'reference' => $p->reference,
             'amount' => $p->amount,
             'fee' => $p->fee,
-            'bank_fee' => $p->bank_fee,
-            'margin' => $p->margin,
-            'bank_credits' => $p->bank_fee !== null ? Fees::money((float) $p->charged() - (float) $p->bank_fee) : null,
-            'company_keeps' => $p->bank_fee !== null ? Fees::money((float) $p->charged() - (float) $p->bank_fee - (float) $p->margin) : null,
             'charged' => $p->charged(),
             'currency' => $p->currency,
             'status' => $p->status,
@@ -261,7 +282,12 @@ class PaymentController extends Controller
             'created_at' => $p->created_at?->toIso8601String(),
             'paid_at' => $p->paid_at?->toIso8601String(),
             'finished_at' => $p->finished_at?->toIso8601String(),
-        ];
+        ] + ($charges ? [
+            'bank_fee' => $p->bank_fee,
+            'margin' => $p->margin,
+            'bank_credits' => $p->bank_fee !== null ? Fees::money((float) $p->charged() - (float) $p->bank_fee) : null,
+            'company_keeps' => $p->bank_fee !== null ? Fees::money((float) $p->charged() - (float) $p->bank_fee - (float) $p->margin) : null,
+        ] : []);
     }
 
     /** A reference comes from outside; stop a spreadsheet reading it as a formula. */

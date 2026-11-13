@@ -197,7 +197,7 @@ async function copyTrail() {
                     </template>
                 </dl>
                 <!-- Where the money went. "The bank credits" is the figure to find on the bank statement. -->
-                <template v-if="payment.bank_fee !== null">
+                <template v-if="payment.bank_fee != null">
                     <h3 class="mb-2 mt-6 text-sm font-semibold">Where the money went</h3>
                     <dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-6 border border-line text-[15px] [&>*]:border-b [&>*]:border-line [&>*]:px-3 [&>*]:py-2 [&>dd]:text-right [&>dd]:tabular-nums">
                         <dt>The shopper paid</dt>
@@ -211,7 +211,7 @@ async function copyTrail() {
                         <dt class="!border-b-0 font-semibold">{{ payment.company.name }} keeps</dt>
                         <dd class="!border-b-0 font-semibold">{{ money(payment.company_keeps, payment.currency) }}</dd>
                     </dl>
-                    <p class="mt-1.5 text-sm text-mute">Worked out from the charges in force when it was paid. <router-link to="/charges" class="link">Charges</router-link></p>
+                    <p class="mt-1.5 text-sm text-mute">Worked out from the charges in force when it was paid. <router-link v-if="can('charges.view')" to="/charges" class="link">Charges</router-link></p>
                 </template>
                 <template v-if="payment.attempts.length">
                     <h3 class="mb-2 mt-6 text-sm font-semibold">Tries at paying</h3>

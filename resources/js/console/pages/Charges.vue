@@ -1,4 +1,5 @@
 <script setup>
+import SelectBox from '../components/SelectBox.vue';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { get, put } from '../api.js';
 import PageHead from '../components/PageHead.vue';
@@ -148,7 +149,7 @@ onMounted(() => load());
                     <button type="submit" class="btn btn-dark mt-6" :disabled="busy">{{ busy ? 'Saving…' : `Save the ${currency} charges` }}</button>
                     <p class="mt-2 text-sm text-mute">Applies to payments made from now on. The change is written to the activity log.</p>
                 </template>
-                <p v-else class="mt-6 text-sm text-mute">These are set by BlessedPay staff.</p>
+                <p v-else class="mt-6 text-sm text-mute">These are set by the super admin.</p>
 
                 <h2 class="mt-7 text-lg font-semibold">3. Who pays them</h2>
                 <p class="mt-1 text-sm text-mute">Each company chooses on its own page: added on top for the shopper, or taken from what the company receives.</p>
@@ -167,16 +168,11 @@ onMounted(() => load());
                     <div class="mt-3 flex flex-wrap items-end gap-3">
                         <div class="min-w-0 flex-[1_1_170px]">
                             <label class="label" for="g-method">Way of paying</label>
-                            <select id="g-method" v-model="method" class="field" @change="load(true)">
-                                <option v-for="[id, label] in METHODS" :key="id" :value="id">{{ label }}</option>
-                            </select>
+                            <SelectBox id="g-method" v-model="method" :options="METHODS.map(([value, label]) => ({ value, label }))" @change="load(true)" />
                         </div>
                         <div class="min-w-0 flex-[1_1_190px]">
                             <label class="label" for="g-bearer">Who pays the charges</label>
-                            <select id="g-bearer" v-model="bearer" class="field" @change="load(true)">
-                                <option value="customer">The shopper, on top</option>
-                                <option value="merchant">The company absorbs them</option>
-                            </select>
+                            <SelectBox id="g-bearer" v-model="bearer" :options="[{ value: 'customer', label: 'The shopper, on top' }, { value: 'merchant', label: 'The company absorbs them' }]" @change="load(true)" />
                         </div>
                         <form class="flex min-w-0 flex-[1_1_200px] items-end gap-2" @submit.prevent="load(true)">
                             <div class="min-w-0 flex-1">

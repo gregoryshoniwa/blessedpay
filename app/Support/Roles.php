@@ -39,8 +39,9 @@ final class Roles
         'team.view' => ['super_admin', 'operations', 'support', 'auditor', 'owner', 'admin'],
         'team.manage' => ['super_admin', 'operations', 'owner', 'admin'],
         'staff.manage' => ['super_admin'],
-        'charges.view' => ['super_admin', 'operations', 'support', 'auditor', 'owner', 'admin', 'finance'],
-        'charges.manage' => ['super_admin', 'operations'],
+        // The bank's fee, the gateway margin and the profit from it: the super admin only (owner's rule).
+        'charges.view' => ['super_admin'],
+        'charges.manage' => ['super_admin'],
         'activity.view' => ['super_admin', 'operations', 'auditor', 'owner', 'admin'],
     ];
 

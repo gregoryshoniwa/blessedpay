@@ -35,7 +35,7 @@ async function leave() {
     <router-view v-if="route.meta.public" />
 
     <div v-else-if="session.user" class="flex min-h-screen flex-wrap bg-paper">
-        <aside class="flex min-w-0 flex-[1_1_240px] flex-col gap-5 bg-black px-4 py-5 text-white md:max-w-[264px]">
+        <aside class="flex min-w-0 flex-[1_1_240px] flex-col gap-5 bg-black px-4 py-5 text-white md:sticky md:top-0 md:h-screen md:max-w-[264px] md:self-start md:overflow-y-auto">
             <router-link to="/" class="flex items-center gap-2">
                 <img src="/mark.png" alt="" width="58" height="36" class="h-9 w-[58px] object-cover" />
                 <span class="font-display text-lg font-bold">Blessed<span class="text-gold-bright">Pay</span></span>

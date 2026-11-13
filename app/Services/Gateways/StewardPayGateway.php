@@ -52,11 +52,13 @@ class StewardPayGateway implements BankGateway
     /** Shared with the sandbox so test mode offers exactly what live does. */
     public static function methodList(string $currency): array
     {
+        $offered = (array) config('blessedpay.methods', ['ecocash', 'card']);
+
         return array_values(array_filter([
             ['id' => 'ecocash', 'label' => 'EcoCash', 'hint' => 'Approve the payment on your phone', 'needs' => ['phone']],
             $currency === 'USD' ? ['id' => 'card', 'label' => 'Visa or Mastercard', 'hint' => 'Card details go straight to the bank', 'needs' => []] : null,
             ['id' => 'bank', 'label' => 'TN CyberTech Bank account', 'hint' => 'Sign in with your CyberCash details', 'needs' => ['phone']],
-        ]));
+        ], fn (?array $m) => $m !== null && in_array($m['id'], $offered, true)));
     }
 
     public function beginsSlowly(string $method): bool

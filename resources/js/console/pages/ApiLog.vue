@@ -1,4 +1,5 @@
 <script setup>
+import SelectBox from '../components/SelectBox.vue';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { get } from '../api.js';
@@ -77,18 +78,11 @@ onMounted(async () => {
         </div>
         <div v-if="session.user.is_staff" class="min-w-0 flex-[1_1_170px]">
             <label class="label" for="company">Company</label>
-            <select id="company" v-model="filters.company_id" class="field">
-                <option value="">All companies</option>
-                <option v-for="c in companies" :key="c.id" :value="String(c.id)">{{ c.name }}</option>
-            </select>
+            <SelectBox id="company" v-model="filters.company_id" :options="[{ value: '', label: 'All companies' }, ...companies.map((c) => ({ value: String(c.id), label: c.name }))]" @change="apply()" />
         </div>
         <div class="min-w-0 flex-[1_1_130px]">
             <label class="label" for="method">Call</label>
-            <select id="method" v-model="filters.method" class="field">
-                <option value="">Any</option>
-                <option value="POST">Start a payment</option>
-                <option value="GET">Read a payment</option>
-            </select>
+            <SelectBox id="method" v-model="filters.method" :options="[{ value: '', label: 'Any' }, { value: 'POST', label: 'Start a payment' }, { value: 'GET', label: 'Read a payment' }]" />
         </div>
         <div class="min-w-0 flex-[1_1_140px]">
             <label class="label" for="from">From</label>

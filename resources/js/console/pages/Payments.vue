@@ -1,4 +1,5 @@
 <script setup>
+import SelectBox from '../components/SelectBox.vue';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { get } from '../api.js';
@@ -102,10 +103,7 @@ onMounted(async () => {
             </div>
             <div v-if="session.user.is_staff" class="min-w-0 flex-[1_1_180px]">
                 <label class="label" for="company">Company</label>
-                <select id="company" v-model="filters.company_id" class="field" @change="apply()">
-                    <option value="">All companies</option>
-                    <option v-for="c in companies" :key="c.id" :value="String(c.id)">{{ c.name }}</option>
-                </select>
+                <SelectBox id="company" v-model="filters.company_id" :options="[{ value: '', label: 'All companies' }, ...companies.map((c) => ({ value: String(c.id), label: c.name }))]" @change="apply()" />
             </div>
             <div class="min-w-0 flex-[1_1_140px]">
                 <label class="label" for="from">From</label>
@@ -120,20 +118,11 @@ onMounted(async () => {
         <div v-show="showMore" id="more-filters" class="mt-3 flex flex-wrap items-end gap-3 border-t border-line pt-3">
             <div class="min-w-0 flex-[1_1_160px]">
                 <label class="label" for="method">Way of paying</label>
-                <select id="method" v-model="filters.method" class="field">
-                    <option value="">Any</option>
-                    <option value="ecocash">EcoCash</option>
-                    <option value="card">Card</option>
-                    <option value="bank">Bank account</option>
-                </select>
+                <SelectBox id="method" v-model="filters.method" :options="[{ value: '', label: 'Any' }, { value: 'ecocash', label: 'EcoCash' }, { value: 'card', label: 'Card' }, { value: 'bank', label: 'Bank account' }]" />
             </div>
             <div class="min-w-0 flex-[1_1_120px]">
                 <label class="label" for="currency">Currency</label>
-                <select id="currency" v-model="filters.currency" class="field">
-                    <option value="">Any</option>
-                    <option value="USD">USD</option>
-                    <option value="ZWG">ZWG</option>
-                </select>
+                <SelectBox id="currency" v-model="filters.currency" :options="[{ value: '', label: 'Any' }, 'USD', 'ZWG']" />
             </div>
             <div class="min-w-0 flex-[1_1_120px]">
                 <label class="label" for="min">Amount from</label>
@@ -145,12 +134,7 @@ onMounted(async () => {
             </div>
             <div class="min-w-0 flex-[1_1_170px]">
                 <label class="label" for="callback">Callback to the company</label>
-                <select id="callback" v-model="filters.callback" class="field">
-                    <option value="">Any</option>
-                    <option value="delivered">Delivered</option>
-                    <option value="failed">Failed</option>
-                    <option value="none">Not sent</option>
-                </select>
+                <SelectBox id="callback" v-model="filters.callback" :options="[{ value: '', label: 'Any' }, { value: 'delivered', label: 'Delivered' }, { value: 'failed', label: 'Failed' }, { value: 'none', label: 'Not sent' }]" />
             </div>
         </div>
 
@@ -172,27 +156,20 @@ onMounted(async () => {
                 <strong class="font-semibold">{{ result.total.toLocaleString() }} {{ result.total === 1 ? 'transaction' : 'transactions' }}</strong>
                 <template v-for="p in result.summary.paid" :key="p.currency">
                     <span class="text-mute"> · </span>{{ money(p.total, p.currency) }} paid <span class="text-mute">({{ p.count }})</span>
+                    <template v-if="result.can_see_charges">
+                        <span class="text-mute"> · </span>bank's revenue {{ money(p.bank_revenue, p.currency) }}<span class="text-mute"> · </span>our margin profit <strong class="font-semibold">{{ money(p.gateway_profit, p.currency) }}</strong>
+                    </template>
                 </template>
             </p>
             <div class="flex flex-wrap items-center gap-3 text-sm">
-                <label class="flex items-center gap-2">
-                    <span class="text-mute">Order</span>
-                    <select v-model="filters.sort" class="field !min-h-10 !w-auto !py-1.5 text-sm" @change="apply()">
-                        <option value="">Newest first</option>
-                        <option value="oldest">Oldest first</option>
-                        <option value="amount_high">Largest amount</option>
-                        <option value="amount_low">Smallest amount</option>
-                    </select>
-                </label>
-                <label class="flex items-center gap-2">
-                    <span class="text-mute">Show</span>
-                    <select v-model="filters.per_page" class="field !min-h-10 !w-auto !py-1.5 text-sm" @change="apply()">
-                        <option value="10">10</option>
-                        <option value="">25</option>
-                        <option value="50">50</option>
-                        <option value="100">100</option>
-                    </select>
-                </label>
+                <div class="flex items-center gap-2">
+                    <span class="text-mute" aria-hidden="true">Order</span>
+                    <SelectBox v-model="filters.sort" small fit label="Order" :options="[{ value: '', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }, { value: 'amount_high', label: 'Largest amount' }, { value: 'amount_low', label: 'Smallest amount' }]" @change="apply()" />
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-mute" aria-hidden="true">Show</span>
+                    <SelectBox v-model="filters.per_page" small fit label="Rows per page" :options="[{ value: '10', label: '10' }, { value: '', label: '25' }, { value: '50', label: '50' }, { value: '100', label: '100' }]" @change="apply()" />
+                </div>
             </div>
         </div>
 

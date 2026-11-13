@@ -35,6 +35,8 @@ class StewardPayTest extends TestCase
             'encryption_key' => 'enc-key', 'sandbox' => false, 'timeout' => 5,
         ]]);
 
+        config(['blessedpay.methods' => ['ecocash', 'card', 'bank']]); // every way of paying, including the one switched off for now
+
         $company = Company::create(['name' => 'BlessLuxe', 'slug' => 'blessluxe', 'website' => 'https://blessluxe.com', 'status' => 'active', 'callback_secret' => 'whsec_test']);
         [, $this->live] = ApiKey::issue($company, 'Shop', 'live');
     }
@@ -202,6 +204,18 @@ class StewardPayTest extends TestCase
             ->assertJsonPath('attempt.method', 'card')->assertJsonPath('attempt.status', 'pending')->assertJsonPath('attempt.error', null);
         $this->assertSame(['failed', 'pending'], PaymentAttempt::orderBy('id')->pluck('status')->all());
         Http::assertNotSent(fn (ClientRequest $r) => $r->url() === 'https://shop.test/hooks/pay'); // nothing to tell the shop yet
+    }
+
+    public function test_a_way_of_paying_can_be_switched_off(): void
+    {
+        config(['blessedpay.methods' => ['ecocash', 'card']]);
+        $this->bank([]);
+        $id = $this->payment();
+
+        $this->assertSame(['ecocash', 'card'], collect($this->getJson("/p/{$id}/status")->json('methods'))->pluck('id')->all());
+        // Not just hidden: it cannot be started by asking for it directly either.
+        $this->postJson("/p/{$id}/pay", ['method' => 'bank', 'phone' => '0771234567'])->assertStatus(422);
+        Http::assertNotSent(fn (ClientRequest $r) => str_ends_with($r->url(), '/sdk/action'));
     }
 
     public function test_an_ecocash_refusal_before_any_prompt_is_told_apart_from_an_unanswered_one(): void
@@ -396,7 +410,25 @@ class StewardPayTest extends TestCase
 
         $charges = $this->actingAs($admin)->getJson('/console-api/charges?mode=live')->assertOk();
         $this->assertSame(['100.60', '0.60', '1.02'], [$charges->json('month.0.bank_credited'), $charges->json('month.0.gateway_profit'), $charges->json('month.0.bank_kept')]);
-        $this->assertSame('0.60', $this->actingAs($finance)->getJson('/console-api/charges?mode=live')->json('all_time.0.gateway_profit'));
+        $overview = $this->actingAs($admin)->getJson('/console-api/overview?mode=live')->assertOk();
+        $this->assertSame(['1.02', '0.60'], [$overview->json('bank_revenue.0.total'), $overview->json('gateway_profit.0.total')]);
+        $this->assertSame(['1.02', '0.60'], [$overview->json('companies.0.bank_revenue.0.total'), $overview->json('companies.0.gateway_profit.0.total')]);
+        $this->assertSame([], $this->actingAs($admin)->getJson('/console-api/overview?mode=live&from=2020-01-01&to=2020-01-31')->json('paid')); // outside the dates
+        $this->assertSame('0.60', $this->actingAs($admin)->getJson('/console-api/payments?mode=live')->json('summary.paid.0.gateway_profit'));
+
+        // Charges are the super admin's alone: nobody else is sent the page, the bank's cut or the margin.
+        $operations = User::factory()->create(['company_id' => null, 'role' => 'operations', 'status' => 'active']);
+        foreach ([$finance, $operations] as $other) {
+            $this->actingAs($other)->getJson('/console-api/charges?mode=live')->assertStatus(403);
+            $payload = json_encode([
+                $this->actingAs($other)->getJson('/console-api/overview?mode=live')->assertOk()->json(),
+                $this->actingAs($other)->getJson('/console-api/payments?mode=live')->assertOk()->json(),
+                $this->actingAs($other)->getJson("/console-api/payments/{$id}")->assertOk()->json(),
+            ]);
+            foreach (['bank_fee', 'margin', 'bank_revenue', 'gateway_profit', 'company_keeps'] as $private) {
+                $this->assertStringNotContainsString('"'.$private.'"', $payload);
+            }
+        }
 
         // Absorbed instead: the shopper pays the order amount; both come out of what the company receives.
         Company::first()->update(['fee_bearer' => 'merchant']);
