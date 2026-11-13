@@ -112,15 +112,6 @@ class GatewayTest extends TestCase
         $this->withToken($b)->getJson("/api/v1/payments/{$id}")->assertStatus(404);
     }
 
-    public function test_live_keys_are_refused_until_the_bank_integration_exists(): void
-    {
-        [, $plain] = ApiKey::issue($this->company(), 'Shop', 'live');
-
-        $this->withToken($plain)->postJson('/api/v1/payments', $this->body())
-            ->assertStatus(503)->assertJsonPath('error.code', 'live_not_available');
-        $this->assertSame(0, Payment::count());
-    }
-
     // ── The shopper's journey and the callback ───────────────────────────────
 
     public function test_sandbox_payment_is_settled_and_the_company_is_told_with_a_valid_signature(): void
@@ -130,12 +121,11 @@ class GatewayTest extends TestCase
         $id = $this->withToken($plain)->postJson('/api/v1/payments', $this->body())->json('id');
 
         $this->get("/p/{$id}")->assertOk()->assertSee('BlessLuxe')->assertSee('48.00');
-        $this->post("/p/{$id}/continue")->assertRedirectContains("/sandbox/{$id}");
-        $this->get("/sandbox/{$id}")->assertOk();
+        $this->postJson("/p/{$id}/pay", ['method' => 'card'])->assertOk()->assertJsonPath('next.kind', 'simulate');
 
-        $back = $this->post("/sandbox/{$id}", ['outcome' => 'paid']);
-        $back->assertRedirectContains('https://shop.test/thanks?payment_id='.$id);
-        $back->assertRedirectContains('status=paid');
+        $done = $this->postJson("/p/{$id}/simulate", ['outcome' => 'paid'])->assertOk()->assertJsonPath('payment.status', 'paid');
+        $this->assertStringStartsWith('https://shop.test/thanks?payment_id='.$id, $done->json('return_url'));
+        $this->assertStringContainsString('status=paid', $done->json('return_url'));
 
         $payment = Payment::findPublic($id);
         $this->assertSame('paid', $payment->status);
@@ -154,7 +144,7 @@ class GatewayTest extends TestCase
         });
 
         $this->assertSame(
-            ['payment.created', 'shopper.redirected', 'payment.paid', 'callback.delivered'],
+            ['payment.created', 'attempt.started', 'payment.paid', 'callback.delivered'],
             $payment->events->pluck('type')->all(),
         );
     }
@@ -165,9 +155,12 @@ class GatewayTest extends TestCase
         [, $plain] = ApiKey::issue($this->company(), 'Shop', 'test');
         $id = $this->withToken($plain)->postJson('/api/v1/payments', $this->body())->json('id');
 
-        $this->post("/sandbox/{$id}", ['outcome' => 'paid']);
-        $this->post("/sandbox/{$id}", ['outcome' => 'failed']);
-        $this->post("/sandbox/{$id}", ['outcome' => 'paid']);
+        $this->postJson("/p/{$id}/pay", ['method' => 'card']);
+        $this->postJson("/p/{$id}/simulate", ['outcome' => 'paid']);
+        $this->postJson("/p/{$id}/simulate", ['outcome' => 'failed']);
+        $this->postJson("/p/{$id}/simulate", ['outcome' => 'paid']);
+        $this->postJson("/p/{$id}/pay", ['method' => 'ecocash', 'phone' => '0771234567'])->assertStatus(422); // closed
+        $this->postJson("/p/{$id}/cancel")->assertOk()->assertJsonPath('payment.status', 'paid');
 
         $this->assertSame('paid', Payment::findPublic($id)->status);
         Http::assertSentCount(1);
@@ -179,7 +172,8 @@ class GatewayTest extends TestCase
         [, $plain] = ApiKey::issue($this->company(), 'Shop', 'test');
         $id = $this->withToken($plain)->postJson('/api/v1/payments', $this->body())->json('id');
 
-        $this->post("/sandbox/{$id}", ['outcome' => 'paid']);
+        $this->postJson("/p/{$id}/pay", ['method' => 'card']);
+        $this->postJson("/p/{$id}/simulate", ['outcome' => 'paid']);
         $this->assertSame('failed', Payment::findPublic($id)->callback_status);
 
         $this->artisan('payments:callbacks')->assertSuccessful();
@@ -198,15 +192,14 @@ class GatewayTest extends TestCase
         $this->assertTrue(CallbackSender::isPublicAddress('https://1.1.1.1/hook'));
     }
 
-    public function test_the_sandbox_page_does_not_exist_for_live_payments(): void
+    public function test_the_test_buttons_do_not_exist_for_live_payments(): void
     {
         $payment = Payment::create([
             'company_id' => $this->company()->id, 'mode' => 'live', 'reference' => 'R1', 'amount' => '5.00',
             'currency' => 'USD', 'gateway' => 'stewardpay', 'return_url' => 'https://shop.test/thanks',
         ]);
 
-        $this->get('/sandbox/'.$payment->publicId())->assertStatus(404);
-        $this->post('/sandbox/'.$payment->publicId(), ['outcome' => 'paid'])->assertStatus(404);
+        $this->postJson('/p/'.$payment->publicId().'/simulate', ['outcome' => 'paid'])->assertStatus(404);
         $this->assertSame('pending', $payment->fresh()->status);
     }
 
@@ -436,6 +429,36 @@ class GatewayTest extends TestCase
         $this->artisan('blessedpay:admin', ['--ensure' => true])->assertSuccessful();
         $this->postJson('/console-api/login', ['email' => 'gshoniwa@gmail.com', 'password' => 'first-deploy-passphrase'])->assertOk();
         $this->assertSame(1, User::count());
+    }
+
+    // ── The "Try it" page ────────────────────────────────────────────────────
+
+    public function test_the_try_it_address_shows_the_signed_callback_only_to_people_who_may_see_that_payment(): void
+    {
+        $company = $this->company();
+        [, $plain] = ApiKey::issue($company, 'Try', 'test');
+        $token = str_repeat('ab12', 8);
+
+        $id = $this->withToken($plain)->postJson('/api/v1/payments', $this->body(['callback_url' => url("/try/hook/{$token}")]))->assertStatus(201)->json('id');
+        $this->postJson("/p/{$id}/pay", ['method' => 'card']);
+        $this->postJson("/p/{$id}/simulate", ['outcome' => 'paid']);          // no HTTP call is made: stray requests would fail the test
+
+        $this->assertSame('delivered', Payment::findPublic($id)->callback_status);
+        $this->getJson("/console-api/try/hook/{$token}")->assertStatus(401);  // signed-in people only
+
+        $seen = $this->actingAs($this->member($company, 'developer'))->getJson("/console-api/try/hook/{$token}")->assertOk();
+        $seen->assertJsonCount(1, 'callbacks')->assertJsonPath('callbacks.0.signature_valid', true);
+        $this->assertSame('payment.paid', json_decode($seen->json('callbacks.0.body'), true)['event']);
+        $this->assertSame($id.'.paid', $seen->json('callbacks.0.headers.X-BlessedPay-Event'));
+
+        // Someone from another company who guesses the address sees nothing.
+        $this->actingAs($this->member($this->company('Other'), 'owner'))->getJson("/console-api/try/hook/{$token}")->assertOk()->assertJsonCount(0, 'callbacks');
+
+        // The address also accepts a real POST, and a tampered body is shown as not valid.
+        $this->app['auth']->forgetGuards();
+        $this->postJson("/try/hook/{$token}", ['event' => 'payment.paid', 'payment' => ['id' => $id]], ['X-BlessedPay-Signature' => 't=1,v1='.str_repeat('0', 64)])->assertOk();
+        $this->postJson('/try/hook/not-a-token', [])->assertStatus(404);
+        $this->assertFalse($this->actingAs($this->staff())->getJson("/console-api/try/hook/{$token}")->json('callbacks.1.signature_valid'));
     }
 
     public function test_the_admin_command_creates_and_resets_a_super_admin(): void

@@ -24,6 +24,11 @@
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
         <env name="DB_CONNECTION" value="sqlite"/>
+        <env name="STEWARDPAY_CLIENT_ID" value=""/>
+        <env name="STEWARDPAY_CLIENT_SECRET" value=""/>
+        <env name="STEWARDPAY_ENCRYPTION_KEY" value=""/>
+        <env name="STEWARDPAY_BASE_URL" value="https://bank.test/v1"/>
+        <env name="BLESSEDPAY_ADMIN_PASSWORD" value=""/>
         <env name="DB_DATABASE" value=":memory:"/>
         <env name="DB_URL" value=""/>
         <env name="MAIL_MAILER" value="array"/>

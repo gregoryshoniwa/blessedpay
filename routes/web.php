@@ -5,18 +5,29 @@ use App\Http\Controllers\Console\AuthController;
 use App\Http\Controllers\Console\CompanyController;
 use App\Http\Controllers\Console\PaymentController;
 use App\Http\Controllers\Console\TeamController;
+use App\Http\Controllers\Console\TryController;
 use App\Http\Controllers\PayPageController;
+use App\Http\Controllers\StewardPayCallbackController;
 use App\Http\Middleware\ConsoleAccess;
 use Illuminate\Support\Facades\Route;
 
 // Public landing page — server-rendered so it loads fast and search engines can read it.
 Route::view('/', 'welcome')->name('home');
 
-// What a shopper sees. /p is ours; /sandbox stands in for the bank in test mode.
+// The checkout: what a shopper sees, full-page or in the pop-up. No cookies, no
+// CSRF token: the long random payment id in the address is the credential.
 Route::get('/p/{id}', [PayPageController::class, 'show'])->name('pay.show');
-Route::post('/p/{id}/continue', [PayPageController::class, 'continue'])->name('pay.continue');
-Route::get('/sandbox/{id}', [PayPageController::class, 'sandbox'])->name('sandbox.show');
-Route::post('/sandbox/{id}', [PayPageController::class, 'sandboxDecide'])->name('sandbox.decide');
+Route::get('/p/{id}/card-return', [PayPageController::class, 'cardReturn'])->name('pay.card-return');
+Route::get('/p/{id}/status', [PayPageController::class, 'status'])->middleware('throttle:90,1');
+Route::post('/p/{id}/pay', [PayPageController::class, 'pay'])->middleware('throttle:20,1');
+Route::post('/p/{id}/cancel', [PayPageController::class, 'cancel'])->middleware('throttle:20,1');
+Route::post('/p/{id}/simulate', [PayPageController::class, 'simulate'])->middleware('throttle:30,1');
+
+// The "Try it" page's stand-in for a company's server: keeps what it is sent.
+Route::post('/try/hook/{token}', [TryController::class, 'hook'])->middleware('throttle:60,1');
+
+// The bank tells us an EcoCash or bank-account payment went through.
+Route::post('/hooks/stewardpay', StewardPayCallbackController::class)->name('hooks.stewardpay')->middleware('throttle:240,1');
 
 // The console's own endpoints: session cookie + CSRF, JSON in and out.
 Route::prefix('console-api')->group(function () {
@@ -54,6 +65,7 @@ Route::prefix('console-api')->group(function () {
         Route::delete('invitations/{id}', [TeamController::class, 'revokeInvite'])->whereNumber('id');
 
         Route::get('activity', [ActivityController::class, 'index']);
+        Route::get('try/hook/{token}', [TryController::class, 'received']);
     });
 });
 

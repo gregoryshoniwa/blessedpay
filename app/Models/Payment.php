@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 #[Fillable([
-    'company_id', 'mode', 'reference', 'amount', 'currency', 'status', 'gateway', 'gateway_reference',
+    'company_id', 'mode', 'reference', 'amount', 'fee', 'payer_phone', 'expires_at', 'currency', 'status', 'gateway', 'gateway_reference',
     'method', 'description', 'return_url', 'callback_url', 'idempotency_key', 'metadata',
     'callback_status', 'callback_attempts', 'paid_at', 'finished_at',
 ])]
@@ -23,6 +23,8 @@ class Payment extends Model
     {
         return [
             'amount' => 'decimal:2',
+            'fee' => 'decimal:2',
+            'expires_at' => 'datetime',
             'metadata' => 'array',
             'paid_at' => 'datetime',
             'finished_at' => 'datetime',
@@ -37,6 +39,23 @@ class Payment extends Model
     public function events(): HasMany
     {
         return $this->hasMany(PaymentEvent::class)->orderBy('id');
+    }
+
+    public function attempts(): HasMany
+    {
+        return $this->hasMany(PaymentAttempt::class)->orderBy('id');
+    }
+
+    /** The try that is in progress right now, if any. */
+    public function openAttempt(): ?PaymentAttempt
+    {
+        return $this->attempts()->where('status', 'pending')->latest('id')->first();
+    }
+
+    /** What the shopper is actually charged: the amount, plus the fee when they bear it. */
+    public function charged(): string
+    {
+        return number_format((float) $this->amount + (float) $this->fee, 2, '.', '');
     }
 
     public function isFinal(): bool
@@ -68,6 +87,8 @@ class Payment extends Model
             'status' => $this->status,
             'mode' => $this->mode,
             'amount' => $this->amount,
+            'fee' => $this->fee,
+            'charged' => $this->charged(),
             'currency' => $this->currency,
             'reference' => $this->reference,
             'description' => $this->description,
@@ -75,6 +96,7 @@ class Payment extends Model
             'gateway_reference' => $this->gateway_reference,
             'metadata' => $this->metadata,
             'redirect_url' => $this->isFinal() ? null : route('pay.show', $this->publicId()),
+            'expires_at' => $this->expires_at?->toIso8601String(),
             'paid_at' => $this->paid_at?->toIso8601String(),
             'created_at' => $this->created_at?->toIso8601String(),
         ];

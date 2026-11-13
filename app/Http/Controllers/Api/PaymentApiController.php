@@ -34,6 +34,8 @@ class PaymentApiController extends Controller
             'callback_url' => ['nullable', 'url:http,https', 'max:2048'],
             'description' => ['nullable', 'string', 'max:255'],
             'metadata' => ['nullable', 'array', 'max:20'],
+            'customer' => ['nullable', 'array'],
+            'customer.phone' => ['nullable', 'string', 'max:30'],
         ]);
 
         $key = $request->header('Idempotency-Key');
@@ -46,7 +48,7 @@ class PaymentApiController extends Controller
         }
 
         if (! Gateways::forMode($mode)->isConfigured()) {
-            return $this->error(503, 'live_not_available', 'Live payments are not switched on yet. Use a test key for now.');
+            return $this->error(503, 'live_not_available', 'Live payments are not set up on this server yet. Use a test key for now.');
         }
 
         try {

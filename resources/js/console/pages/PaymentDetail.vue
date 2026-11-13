@@ -67,10 +67,14 @@ const pretty = (data) => JSON.stringify(data, null, 2);
                     <dd><StatusBadge :status="payment.status" /> <StatusBadge :status="payment.mode" class="ml-1" /></dd>
                     <dt class="text-mute">Company</dt>
                     <dd><router-link :to="`/companies/${payment.company.id}`" class="link">{{ payment.company.name }}</router-link></dd>
+                    <template v-if="Number(payment.fee) > 0">
+                        <dt class="text-mute">Shopper paid</dt>
+                        <dd>{{ money(payment.charged, payment.currency) }} <span class="text-sm text-mute">(includes {{ money(payment.fee, payment.currency) }} processing fee)</span></dd>
+                    </template>
                     <dt class="text-mute">Payment id</dt>
                     <dd class="break-all font-mono text-sm">{{ payment.id }}</dd>
                     <dt class="text-mute">Bank</dt>
-                    <dd>{{ payment.gateway === 'sandbox' ? 'Sandbox (pretend bank)' : 'StewardPay' }}</dd>
+                    <dd>{{ payment.gateway === 'sandbox' ? 'Sandbox (pretend bank)' : 'TN CyberTech Bank (StewardPay)' }}</dd>
                     <dt class="text-mute">Bank reference</dt>
                     <dd class="break-all font-mono text-sm">{{ payment.gateway_reference || '—' }}</dd>
                     <dt class="text-mute">Paid with</dt>
@@ -100,6 +104,19 @@ const pretty = (data) => JSON.stringify(data, null, 2);
                         <dd class="break-all font-mono text-sm">{{ payment.idempotency_key }}</dd>
                     </template>
                 </dl>
+                <template v-if="payment.attempts.length">
+                    <h3 class="mb-2 mt-6 text-sm font-semibold">Tries</h3>
+                    <ul class="grid gap-px border border-line bg-line text-sm">
+                        <li v-for="a in payment.attempts" :key="a.id" class="bg-white px-3 py-2.5">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <span class="font-medium">{{ a.method }}<span v-if="a.phone" class="font-normal text-mute"> · {{ a.phone }}</span></span>
+                                <StatusBadge :status="a.status === 'abandoned' ? 'cancelled' : a.status" />
+                            </div>
+                            <div class="mt-1 break-all font-mono text-xs text-mute">{{ a.reference }}<template v-if="a.bank_id"> · bank {{ a.bank_id }}</template></div>
+                            <div v-if="a.error" class="mt-1 text-[#454545]">{{ a.error }}</div>
+                        </li>
+                    </ul>
+                </template>
                 <template v-if="payment.metadata">
                     <h3 class="mb-2 mt-5 text-sm font-semibold">Extra details sent by the company</h3>
                     <pre class="overflow-x-auto bg-paper p-3 font-mono text-xs">{{ pretty(payment.metadata) }}</pre>

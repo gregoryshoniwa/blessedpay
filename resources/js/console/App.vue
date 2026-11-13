@@ -15,6 +15,7 @@ const links = computed(() => {
         user.is_staff
             ? { to: '/companies', label: 'Companies' }
             : { to: `/companies/${user.company.id}`, label: 'Company and keys' },
+        { to: '/try', label: 'Try it' },
         can('team.view') && { to: '/team', label: user.is_staff ? 'Staff' : 'Team' },
         can('activity.view') && { to: '/activity', label: 'Activity log' },
     ].filter(Boolean);

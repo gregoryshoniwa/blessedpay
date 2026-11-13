@@ -14,4 +14,16 @@ return [
         'password' => env('BLESSEDPAY_ADMIN_PASSWORD'),
     ],
 
+    /*
+    | The bank's processing fee (see App\Services\Fees). Told to us by the bank:
+    | 1% on every method, with a US$0.20 minimum on cards.
+    */
+    'fee' => [
+        'percent' => (float) env('BLESSEDPAY_FEE_PERCENT', 1.0),
+        'minimum' => (float) env('BLESSEDPAY_FEE_MINIMUM', 0.20),
+    ],
+
+    // How long a shopper has to finish paying before the payment is closed.
+    'payment_minutes' => (int) env('BLESSEDPAY_PAYMENT_MINUTES', 30),
+
 ];

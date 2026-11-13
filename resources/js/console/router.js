@@ -14,6 +14,7 @@ const router = createRouter({
         { path: '/payments/:id', component: () => import('./pages/PaymentDetail.vue'), meta: { title: 'Payment' } },
         { path: '/companies', component: () => import('./pages/Companies.vue'), meta: { title: 'Companies' } },
         { path: '/companies/:id', component: () => import('./pages/CompanyDetail.vue'), meta: { title: 'Company' } },
+        { path: '/try', component: () => import('./pages/TryIt.vue'), meta: { title: 'Try it' } },
         { path: '/team', component: () => import('./pages/TeamPage.vue'), meta: { title: 'Team', needs: 'team.view' } },
         { path: '/activity', component: () => import('./pages/Activity.vue'), meta: { title: 'Activity log', needs: 'activity.view' } },
         { path: '/:rest(.*)*', redirect: '/' },

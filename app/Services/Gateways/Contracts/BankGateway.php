@@ -3,11 +3,13 @@
 namespace App\Services\Gateways\Contracts;
 
 use App\Models\Payment;
+use App\Models\PaymentAttempt;
 use App\Services\Gateways\GatewayUnavailable;
 
 /**
  * One bank-side processor. BlessedPay never takes card details itself: a
- * gateway only knows where to SEND the shopper and how to ask what HAPPENED.
+ * gateway only knows which ways of paying it offers, how to START one, and
+ * how to ask the bank what HAPPENED.
  *
  * To add a processor: implement this and register it in Gateways::all().
  */
@@ -18,22 +20,41 @@ interface BankGateway
 
     public function label(): string;
 
-    /** Credentials present and the integration written? */
+    /** Credentials present? */
     public function isConfigured(): bool;
 
     /**
-     * Begin the payment at the processor and return the URL to send the
-     * shopper to. May set gateway_reference on the payment.
+     * The ways this payment can be paid, in the order to offer them.
      *
-     * @throws GatewayUnavailable
+     * @return list<array{id:string, label:string, hint:string, needs:list<string>}>
+     *                                                                               needs: what the checkout must collect first — [] or ['phone']
      */
-    public function start(Payment $payment): string;
+    public function methods(Payment $payment): array;
 
     /**
-     * Ask the processor for the current state.
-     *
-     * @return array{status:string, gateway_reference?:string, method?:string, raw?:array}|null
-     *                                                                                          null when it can't be reached or has nothing new — leave the payment as it is
+     * True when begin() only returns once the shopper has answered (an EcoCash
+     * prompt on their phone). The checkout then answers the browser first and
+     * calls begin() after the response has been sent.
      */
-    public function refresh(Payment $payment): ?array;
+    public function beginsSlowly(string $method): bool;
+
+    /**
+     * Start one try at the bank. Returns what the checkout does next:
+     *   ['kind' => 'wait']                                   keep asking for the status
+     *   ['kind' => 'card', 'session_id', 'script', 'url']    show the bank's card form in the page
+     *   ['kind' => 'open', 'url']                            open the bank's own page in a new tab, and wait
+     *   ['kind' => 'simulate']                               sandbox: show Approve / Decline buttons
+     * and, when the bank already answered, 'result' => the same shape check() returns.
+     *
+     * @throws GatewayUnavailable with a message that is safe to show the shopper
+     */
+    public function begin(PaymentAttempt $attempt): array;
+
+    /**
+     * Ask the bank what happened to a try.
+     *
+     * @return array{status:'paid'|'failed'|'pending', gateway_reference?:?string, error?:?string, raw?:?array}|null
+     *                                                                                                               null when the bank can't be reached — leave the attempt as it is
+     */
+    public function check(PaymentAttempt $attempt): ?array;
 }

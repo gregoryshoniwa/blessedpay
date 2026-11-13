@@ -39,6 +39,21 @@ class CallbackSender
         $payment->increment('callback_attempts');
 
         try {
+            if ($token = TryHook::accepts($payment->callback_url)) {
+                // The console's "Try it" page: hand it over directly instead of
+                // calling ourselves over the network (which can wait on itself).
+                TryHook::record($token, [
+                    'Content-Type' => 'application/json',
+                    'X-BlessedPay-Signature' => "t={$timestamp},v1=".self::sign($timestamp, $body, $payment->company->callback_secret),
+                    'X-BlessedPay-Event' => $payment->publicId().'.'.$payment->status,
+                    'User-Agent' => 'BlessedPay/1.0',
+                ], $body);
+                $payment->forceFill(['callback_status' => 'delivered'])->save();
+                $payment->log('callback.delivered', "Callback delivered (to the Try it page), attempt {$payment->callback_attempts}", ['url' => $payment->callback_url]);
+
+                return true;
+            }
+
             if (! self::isPublicAddress($payment->callback_url)) {
                 throw new \RuntimeException('The callback address is not a public web address.');
             }

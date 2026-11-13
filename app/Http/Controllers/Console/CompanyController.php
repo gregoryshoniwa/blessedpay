@@ -6,6 +6,9 @@ use App\Http\Controllers\Controller;
 use App\Models\ActivityLog;
 use App\Models\ApiKey;
 use App\Models\Company;
+use App\Services\Fees;
+use App\Services\Gateways\Gateways;
+use App\Support\EmbedOrigin;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -58,7 +61,21 @@ class CompanyController extends Controller
             'name' => ['sometimes', 'required', 'string', 'max:120', Rule::unique('companies', 'name')->ignore($company->id)],
             'website' => ['sometimes', 'nullable', 'url:http,https', 'max:255'],
             'status' => ['sometimes', 'in:active,suspended'],
+            'fee_bearer' => ['sometimes', 'in:merchant,customer'],
+            'embed_origins' => ['sometimes', 'array', 'max:10'],
+            'embed_origins.*' => ['string', 'max:255', function (string $attribute, mixed $value, \Closure $fail) {
+                if (EmbedOrigin::clean($value) === null) {
+                    $fail('Each site must look like https://shop.example.com, with nothing after the name.');
+                }
+            }],
         ]);
+
+        if (isset($data['embed_origins'])) {
+            $data['embed_origins'] = array_values(array_unique(array_map(EmbedOrigin::clean(...), $data['embed_origins'])));
+        }
+        if (isset($data['fee_bearer']) && $data['fee_bearer'] !== $company->fee_bearer) {
+            ActivityLog::record($request, 'company.fee_bearer', $data['fee_bearer'] === 'customer' ? 'Set the bank fee to be paid by shoppers' : 'Set the bank fee to be absorbed by the company', $company->id);
+        }
 
         // Suspending or restoring a company is a staff decision, never the company's own.
         if (isset($data['status']) && $data['status'] !== $company->status) {
@@ -141,6 +158,10 @@ class CompanyController extends Controller
             'slug' => $c->slug,
             'website' => $c->website,
             'status' => $c->status,
+            'fee_bearer' => $c->fee_bearer ?? 'merchant',
+            'embed_origins' => $c->embed_origins ?? [],
+            'fee' => ['percent' => Fees::percent(), 'minimum' => Fees::minimum()],
+            'live_ready' => Gateways::forMode('live')->isConfigured(),
             'users_count' => $c->users_count ?? 0,
             'payments_count' => $c->payments_count ?? 0,
             'created_at' => $c->created_at?->toIso8601String(),

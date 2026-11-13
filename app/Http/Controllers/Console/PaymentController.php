@@ -83,6 +83,12 @@ class PaymentController extends Controller
             'idempotency_key' => $payment->idempotency_key,
             'metadata' => $payment->metadata,
             'callback_attempts' => $payment->callback_attempts,
+            'expires_at' => $payment->expires_at?->toIso8601String(),
+            'attempts' => $payment->attempts->map(fn ($a) => [
+                'id' => $a->id, 'method' => $a->label(), 'status' => $a->status, 'reference' => $a->reference,
+                'bank_id' => $a->gateway_uid, 'phone' => $a->phone, 'amount' => $a->amount, 'error' => $a->error,
+                'at' => $a->created_at?->toIso8601String(),
+            ]),
             'events' => $payment->events->map(fn ($e) => [
                 'id' => $e->id, 'type' => $e->type, 'summary' => $e->summary, 'data' => $e->data,
                 'at' => $e->created_at?->toIso8601String(),
@@ -113,7 +119,7 @@ class PaymentController extends Controller
 
     private function find(Request $request, string $id): Payment
     {
-        $payment = Payment::with(['company:id,name', 'events'])->find(str_starts_with($id, 'pay_') ? substr($id, 4) : $id);
+        $payment = Payment::with(['company:id,name', 'events', 'attempts'])->find(str_starts_with($id, 'pay_') ? substr($id, 4) : $id);
         abort_unless($payment && $request->user()->reaches($payment->company_id), 404);
 
         return $payment;
@@ -158,6 +164,8 @@ class PaymentController extends Controller
             'mode' => $p->mode,
             'reference' => $p->reference,
             'amount' => $p->amount,
+            'fee' => $p->fee,
+            'charged' => $p->charged(),
             'currency' => $p->currency,
             'status' => $p->status,
             'method' => $p->method,

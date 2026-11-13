@@ -13,7 +13,11 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        // The checkout runs inside a pop-up on other sites, where the browser
+        // withholds our cookies — so it cannot carry a CSRF token. Its
+        // credential is the payment id in the address. The bank's notice has
+        // no session either.
+        $middleware->validateCsrfTokens(except: ['p/*', 'hooks/*', 'try/hook/*']);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

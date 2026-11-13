@@ -3,13 +3,14 @@
 namespace App\Services\Gateways;
 
 use App\Models\Payment;
+use App\Models\PaymentAttempt;
 use App\Services\Gateways\Contracts\BankGateway;
 
 /**
- * A pretend bank for test-mode keys. The "bank page" is our own
- * /sandbox/{payment} screen with Approve / Decline / Cancel buttons, so the
- * whole flow (redirect, outcome, signed callback, return) can be exercised
- * without real money and before the real bank integration exists.
+ * A pretend bank for test-mode keys. It offers the same ways of paying as the
+ * real bank, but instead of a card form or a phone prompt the checkout shows
+ * Approve / Decline buttons — so the whole flow (pop-up, outcome, signed
+ * callback, return) can be exercised without real money.
  */
 class SandboxGateway implements BankGateway
 {
@@ -28,18 +29,26 @@ class SandboxGateway implements BankGateway
         return true;
     }
 
-    public function start(Payment $payment): string
+    public function methods(Payment $payment): array
     {
-        if ($payment->gateway_reference === null) {
-            $payment->forceFill(['gateway_reference' => 'SBX-'.strtoupper(bin2hex(random_bytes(5)))])->save();
-        }
-
-        return route('sandbox.show', $payment->publicId());
+        return StewardPayGateway::methodList($payment->currency);
     }
 
-    /** Sandbox outcomes are decided on the sandbox page, never by polling. */
-    public function refresh(Payment $payment): ?array
+    public function beginsSlowly(string $method): bool
     {
-        return null;
+        return false;
+    }
+
+    public function begin(PaymentAttempt $attempt): array
+    {
+        $attempt->forceFill(['gateway_uid' => 'SBX-'.strtoupper(bin2hex(random_bytes(5)))])->save();
+
+        return ['kind' => 'simulate'];
+    }
+
+    /** Sandbox outcomes are decided by the buttons, never by asking a bank. */
+    public function check(PaymentAttempt $attempt): ?array
+    {
+        return ['status' => 'pending'];
     }
 }

@@ -1,0 +1,495 @@
+<script setup>
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+
+// initial: the state the server rendered with the page. embed: the origin of
+// the site showing us in a pop-up (already checked by the server), or null.
+const props = defineProps({ initial: { type: Object, required: true }, embed: { type: String, default: null } });
+
+const state = reactive({ ...props.initial });
+const embedded = !!props.embed && window.parent !== window;
+const base = `/p/${state.payment.id}`;
+
+// What is on screen: choose | waiting | card | bank | simulate | paid | ended
+const view = ref('choose');
+const method = ref(state.methods[0]?.id || '');
+const phone = ref('');
+const busy = ref(false);
+const problem = ref('');
+const card = reactive({ loading: false, failed: false, url: '' });
+const bankUrl = ref('');
+const now = ref(Date.now());
+const returning = ref(0);
+const root = ref(null);
+
+const pay = computed(() => state.payment);
+const money = (amount) => `${pay.value.currency} ${Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const chosen = computed(() => state.methods.find((m) => m.id === method.value));
+const needsPhone = computed(() => chosen.value?.needs.includes('phone'));
+const hasFee = computed(() => Number(pay.value.fee) > 0);
+
+const secondsLeft = computed(() => (pay.value.expires_at ? Math.max(0, Math.round((new Date(pay.value.expires_at).getTime() - now.value) / 1000)) : null));
+const clock = computed(() => (secondsLeft.value === null ? '' : `${Math.floor(secondsLeft.value / 60)}:${String(secondsLeft.value % 60).padStart(2, '0')}`));
+
+// ── Talking to the page that opened the pop-up ──────────────────────────────
+function tell(type, data = {}) {
+    if (embedded) window.parent.postMessage({ source: 'blessedpay-checkout', type, data }, props.embed);
+}
+const publicPayment = () => ({
+    id: pay.value.id, status: pay.value.status, amount: pay.value.amount, charged: pay.value.charged,
+    currency: pay.value.currency, reference: pay.value.reference, mode: pay.value.mode,
+});
+
+function onMessage(event) {
+    const message = event.data || {};
+    // The card form finished and came back (it may be nested inside the bank's frame): look now.
+    if (message.source === 'blessedpay-card') return void check();
+    if (event.origin !== props.embed || message.source !== 'blessedpay-host') return;
+    if (message.type === 'close-request') tell('close'); // the payment stays open; the shopper can come back to it
+}
+
+// ── Server calls ────────────────────────────────────────────────────────────
+async function call(path, body) {
+    const response = await fetch(base + path, {
+        method: body ? 'POST' : 'GET',
+        headers: { Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+        credentials: 'omit',
+    });
+    const data = await response.json().catch(() => ({}));
+    if (data.payment) Object.assign(state, data);
+    if (!response.ok) throw new Error(data.message || 'Something went wrong. Please try again.');
+    return data;
+}
+
+let timer = null;
+function watchStatus(every) {
+    clearInterval(timer);
+    timer = every ? setInterval(check, every) : null;
+}
+async function check() {
+    try {
+        await call('/status');
+    } catch {
+        return; // a dropped connection: the next tick tries again
+    }
+    settle();
+}
+
+// Move the screen to wherever the payment now is.
+function settle() {
+    if (pay.value.status === 'paid') return finish('paid');
+    if (pay.value.status !== 'pending') return finish('ended');
+
+    const attempt = state.attempt;
+    if (attempt?.status === 'failed' && ['waiting', 'card', 'bank', 'simulate'].includes(view.value)) {
+        problem.value = `${attempt.error || 'That did not go through.'} Try again or choose another way to pay.`;
+        tell('failed', { payment: publicPayment(), message: attempt.error });
+        closeCard();
+        view.value = 'choose';
+        watchStatus(0);
+    }
+}
+
+function finish(kind) {
+    watchStatus(0);
+    closeCard();
+    view.value = kind;
+    if (kind === 'paid') {
+        // Let the tick be seen before the pop-up closes.
+        if (embedded) setTimeout(() => tell('success', { payment: publicPayment(), return_url: state.return_url }), 1400);
+        else startReturn();
+    } else if (embedded && pay.value.status === 'cancelled') {
+        tell('cancel', { payment: publicPayment(), return_url: state.return_url });
+    }
+}
+
+let returnTimer = null;
+function startReturn() {
+    returning.value = 5;
+    returnTimer = setInterval(() => {
+        if (--returning.value <= 0) {
+            clearInterval(returnTimer);
+            window.location.assign(state.return_url);
+        }
+    }, 1000);
+}
+function stay() {
+    clearInterval(returnTimer);
+    returning.value = 0;
+}
+
+// ── Paying ──────────────────────────────────────────────────────────────────
+async function submit() {
+    if (busy.value || !chosen.value) return;
+    problem.value = '';
+
+    if (needsPhone.value && !state.has_phone && !/^(\+?263|0)?7\d{8}$/.test(phone.value.replace(/[\s-]/g, ''))) {
+        problem.value = 'Enter a Zimbabwe mobile number, for example 077 123 4567.';
+        nextTick(() => document.getElementById(`phone-${method.value}`)?.focus());
+        return;
+    }
+
+    // The bank's page opens in a new tab. Browsers only allow that directly
+    // from the click, so open it now and point it at the bank once we know where.
+    const tab = method.value === 'bank' && pay.value.mode === 'live' ? window.open('', '_blank') : null;
+
+    busy.value = true;
+    try {
+        const { next } = await call('/pay', { method: method.value, phone: phone.value || null });
+        begin(next, tab);
+    } catch (e) {
+        tab?.close();
+        problem.value = e.message;
+    } finally {
+        busy.value = false;
+    }
+}
+
+function begin(next, tab) {
+    if (next.kind === 'card') {
+        view.value = 'card';
+        watchStatus(4000);
+        return openCard(next);
+    }
+    if (next.kind === 'open') {
+        bankUrl.value = next.url;
+        if (tab) tab.location.replace(next.url);
+        view.value = 'bank';
+        return watchStatus(4000);
+    }
+    tab?.close();
+    if (next.kind === 'simulate') {
+        view.value = 'simulate';
+        return;
+    }
+    view.value = 'waiting';
+    watchStatus(3000);
+}
+
+// The card form is Mastercard's own page, drawn inside ours by their script.
+// We never see what is typed into it.
+function openCard(next) {
+    card.loading = true;
+    card.failed = false;
+    card.url = next.url;
+
+    window.bpCardDone = () => check();
+    window.bpCardError = () => {
+        card.failed = true;
+        card.loading = false;
+    };
+    try {
+        Object.keys(sessionStorage).filter((k) => k.startsWith('HostedCheckout')).forEach((k) => sessionStorage.removeItem(k));
+    } catch {
+        /* storage blocked: nothing to clear */
+    }
+
+    document.getElementById('bp-card-script')?.remove();
+    const script = document.createElement('script');
+    script.id = 'bp-card-script';
+    script.src = next.script;
+    script.dataset.complete = 'bpCardDone';
+    script.dataset.cancel = 'bpCardDone';
+    script.dataset.timeout = 'bpCardDone';
+    script.dataset.error = 'bpCardError';
+    script.onerror = window.bpCardError;
+    script.onload = () => {
+        try {
+            window.Checkout.configure({ session: { id: next.session_id } });
+            window.Checkout.showEmbeddedPage('#bp-card');
+            card.loading = false;
+        } catch {
+            window.bpCardError();
+        }
+    };
+    document.head.appendChild(script);
+}
+function closeCard() {
+    document.getElementById('bp-card-script')?.remove();
+    const box = document.getElementById('bp-card');
+    if (box) box.innerHTML = '';
+}
+
+async function simulate(outcome) {
+    busy.value = true;
+    try {
+        await call('/simulate', { outcome });
+        settle();
+    } catch (e) {
+        problem.value = e.message;
+    } finally {
+        busy.value = false;
+    }
+}
+
+function another() {
+    closeCard();
+    watchStatus(0);
+    problem.value = '';
+    view.value = 'choose';
+}
+
+async function cancel() {
+    busy.value = true;
+    try {
+        await call('/cancel', {});
+    } catch {
+        /* closing anyway */
+    }
+    busy.value = false;
+    if (embedded) return finish(pay.value.status === 'paid' ? 'paid' : 'ended');
+    window.location.assign(state.return_url);
+}
+
+// ── Life cycle ──────────────────────────────────────────────────────────────
+let tick = null;
+let sizer = null;
+onMounted(() => {
+    window.addEventListener('message', onMessage);
+    tick = setInterval(() => (now.value = Date.now()), 1000);
+
+    if (pay.value.status === 'paid') view.value = 'paid';
+    else if (pay.value.status !== 'pending') view.value = 'ended';
+    else if (state.attempt?.status === 'pending' && state.attempt.method !== 'card') {
+        // The page was reloaded part-way through: carry on waiting.
+        method.value = state.attempt.method;
+        view.value = pay.value.mode === 'test' ? 'simulate' : state.attempt.method === 'bank' ? 'bank' : 'waiting';
+        if (view.value !== 'simulate') watchStatus(3000);
+    } else if (new URLSearchParams(window.location.search).has('card')) {
+        view.value = 'waiting';
+        method.value = 'card';
+        watchStatus(3000);
+    }
+
+    // Inside the pop-up the keyboard is ours, not the shop page's: pass Escape up so it still closes.
+    if (embedded) document.addEventListener('keydown', (e) => e.key === 'Escape' && tell('close'));
+
+    tell('ready');
+    if (embedded && 'ResizeObserver' in window) {
+        sizer = new ResizeObserver(() => tell('resize', { height: root.value?.scrollHeight }));
+        sizer.observe(root.value);
+    }
+    document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && timer && check());
+});
+onBeforeUnmount(() => {
+    window.removeEventListener('message', onMessage);
+    clearInterval(tick);
+    clearInterval(timer);
+    clearInterval(returnTimer);
+    sizer?.disconnect();
+});
+
+watch(secondsLeft, (left) => left === 0 && view.value === 'choose' && check());
+watch(method, () => (problem.value = ''));
+
+const waitingCopy = computed(() =>
+    method.value === 'card'
+        ? { title: 'Confirming your card payment', steps: ['Card details sent to the bank', 'Waiting for the bank to confirm', 'Payment confirmed'] }
+        : { title: 'Approve the payment on your phone', steps: [`Request sent to ${state.attempt?.phone || 'your phone'}`, 'Enter your EcoCash PIN on your phone to approve', 'Payment confirmed'] },
+);
+</script>
+
+<template>
+    <div ref="root" class="bp-checkout mx-auto w-full" :class="embedded ? 'max-w-none' : 'max-w-md'">
+        <p v-if="pay.mode === 'test'" class="bg-gold px-4 py-1.5 text-center font-mono text-xs font-medium text-black">TEST MODE · NO MONEY MOVES</p>
+
+        <div class="border-gold bg-coal text-white" :class="embedded ? 'min-h-[420px]' : 'border shadow-[0_0_60px_rgba(224,176,58,0.18)]'">
+            <!-- Who is being paid, and how much -->
+            <header class="border-b border-edge px-5 py-5 sm:px-7" :class="embedded ? 'pr-16' : ''">
+                <div class="flex items-center justify-between gap-3 font-mono text-xs text-[#a8a8a8]">
+                    <span>PAYING</span>
+                    <span class="truncate">REF {{ pay.reference }}</span>
+                </div>
+                <div class="mt-2 flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+                    <div class="min-w-0">
+                        <h1 class="truncate font-display text-xl font-bold">{{ state.merchant.name }}</h1>
+                        <p v-if="pay.description" class="truncate text-sm text-haze">{{ pay.description }}</p>
+                    </div>
+                    <p class="font-display text-3xl font-bold leading-none tabular-nums">{{ money(pay.charged) }}</p>
+                </div>
+                <dl v-if="hasFee" class="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 border-t border-edge pt-3 text-sm text-haze">
+                    <dt>Order total</dt>
+                    <dd class="tabular-nums">{{ money(pay.amount) }}</dd>
+                    <dt>Processing fee</dt>
+                    <dd class="tabular-nums">{{ money(pay.fee) }}</dd>
+                </dl>
+            </header>
+
+            <div class="px-5 py-6 sm:px-7" aria-live="polite">
+                <!-- Choose how to pay -->
+                <form v-if="view === 'choose'" novalidate @submit.prevent="submit">
+                    <div class="flex items-center justify-between gap-3">
+                        <h2 class="text-lg font-semibold">How would you like to pay?</h2>
+                        <span v-if="clock" class="font-mono text-sm tabular-nums" :class="secondsLeft < 120 ? 'text-gold-bright' : 'text-[#a8a8a8]'" :title="'Time left to pay'">
+                            <span class="sr-only">Time left to pay: </span>{{ clock }}
+                        </span>
+                    </div>
+
+                    <p v-if="problem" role="alert" class="mt-4 border border-gold px-4 py-3 text-sm">{{ problem }}</p>
+
+                    <fieldset class="mt-4 grid gap-2">
+                        <legend class="sr-only">Ways to pay</legend>
+                        <div v-for="m in state.methods" :key="m.id" class="border" :class="method === m.id ? 'border-gold bg-[#17140c]' : 'border-[#3a3a3a]'">
+                            <label class="flex min-h-14 cursor-pointer items-center gap-3 px-4 py-3">
+                                <input v-model="method" type="radio" name="method" :value="m.id" class="size-5 flex-none accent-[#e0b03a]" />
+                                <span class="min-w-0">
+                                    <span class="block font-semibold">{{ m.label }}</span>
+                                    <span class="block text-sm text-[#a8a8a8]">{{ m.hint }}</span>
+                                </span>
+                            </label>
+
+                            <div v-if="method === m.id && m.needs.includes('phone') && !state.has_phone" class="border-t border-edge px-4 py-4">
+                                <label class="mb-1.5 block text-sm font-medium" :for="`phone-${m.id}`">
+                                    {{ m.id === 'ecocash' ? 'EcoCash number' : 'The mobile number on your bank profile' }}
+                                </label>
+                                <div class="flex">
+                                    <span class="flex items-center border border-r-0 border-[#8a8a8a] bg-black px-3 font-mono text-sm text-haze" aria-hidden="true">+263</span>
+                                    <input
+                                        :id="`phone-${m.id}`"
+                                        v-model.trim="phone"
+                                        type="tel"
+                                        inputmode="tel"
+                                        autocomplete="tel-national"
+                                        placeholder="77 123 4567"
+                                        class="min-h-11 w-full min-w-0 border border-[#8a8a8a] bg-black px-3 py-2.5 text-base text-white placeholder:text-[#6b6b6b]"
+                                    />
+                                </div>
+                            </div>
+                            <p v-else-if="method === m.id && m.needs.includes('phone')" class="border-t border-edge px-4 py-3 text-sm text-haze">Using {{ state.phone }}</p>
+                        </div>
+                    </fieldset>
+
+                    <button type="submit" class="btn btn-gold mt-5 w-full py-4 text-base" :disabled="busy || !chosen">
+                        <template v-if="busy">{{ method === 'ecocash' ? 'Sending…' : 'One moment…' }}</template>
+                        <template v-else-if="method === 'bank'">Continue with TN CyberTech Bank</template>
+                        <template v-else-if="method === 'card'">Enter card details</template>
+                        <template v-else>Pay {{ money(pay.charged) }}</template>
+                    </button>
+
+                    <p class="mt-4 flex gap-2 text-sm text-[#a8a8a8]">
+                        <svg aria-hidden="true" class="mt-0.5 size-4 flex-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" /><path d="M8 11V7a4 4 0 018 0v4" /></svg>
+                        Payments are processed by TN CyberTech Bank. Card details go straight to the bank, never to {{ state.merchant.name }} or BlessedPay.
+                    </p>
+                </form>
+
+                <!-- EcoCash prompt sent / card being confirmed -->
+                <div v-else-if="view === 'waiting'">
+                    <h2 class="text-lg font-semibold">{{ waitingCopy.title }}</h2>
+                    <ol class="mt-5 grid gap-4">
+                        <li class="flex items-start gap-3">
+                            <svg aria-hidden="true" class="mt-0.5 size-5 flex-none text-gold-bright" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 12l5 5 9-10" /></svg>
+                            {{ waitingCopy.steps[0] }}
+                        </li>
+                        <li class="flex items-start gap-3 font-semibold">
+                            <span class="relative mt-1 flex size-4 flex-none" aria-hidden="true"><span class="absolute inline-flex size-full bg-gold opacity-60 motion-safe:animate-ping"></span><span class="relative inline-flex size-4 bg-gold"></span></span>
+                            {{ waitingCopy.steps[1] }}
+                        </li>
+                        <li class="flex items-start gap-3 text-[#8a8a8a]">
+                            <span class="mt-1 inline-flex size-4 flex-none border border-[#6b6b6b]" aria-hidden="true"></span>
+                            {{ waitingCopy.steps[2] }}
+                        </li>
+                    </ol>
+                    <p class="mt-6 text-sm text-haze">Keep this page open. It updates by itself.</p>
+                    <button type="button" class="mt-4 min-h-11 text-sm text-haze underline underline-offset-2" @click="another">Choose another way to pay</button>
+                </div>
+
+                <!-- Mastercard's card form -->
+                <div v-else-if="view === 'card'">
+                    <h2 class="text-lg font-semibold">Enter your card details</h2>
+                    <p class="mt-1 text-sm text-haze">This form belongs to the bank. Your card number is never seen by {{ state.merchant.name }} or BlessedPay.</p>
+                    <p v-if="card.loading" class="mt-5 text-haze">Opening the bank's card form…</p>
+                    <div v-if="card.failed" role="alert" class="mt-5 border border-gold px-4 py-3 text-sm">
+                        The card form could not be shown here.
+                        <a :href="card.url" target="_blank" rel="noopener" class="font-semibold text-gold-bright underline underline-offset-2">Open the bank's card page in a new tab</a>, then come back: this page updates by itself.
+                    </div>
+                    <div id="bp-card" class="mt-4 min-h-[420px] bg-white"></div>
+                    <button type="button" class="mt-4 min-h-11 text-sm text-haze underline underline-offset-2" @click="another">Choose another way to pay</button>
+                </div>
+
+                <!-- The bank's own sign-in page, in another tab -->
+                <div v-else-if="view === 'bank'">
+                    <h2 class="text-lg font-semibold">Finish on the bank's page</h2>
+                    <p class="mt-2 text-haze">We opened TN CyberTech Bank in a new tab. Sign in there and approve the payment, then come back here.</p>
+                    <a v-if="bankUrl" :href="bankUrl" target="_blank" rel="noopener" class="btn btn-gold mt-5 w-full py-4 text-base">Open the bank page</a>
+                    <p class="mt-5 flex items-center gap-3 text-sm text-haze">
+                        <span class="relative flex size-3 flex-none" aria-hidden="true"><span class="absolute inline-flex size-full bg-gold opacity-60 motion-safe:animate-ping"></span><span class="relative inline-flex size-3 bg-gold"></span></span>
+                        Waiting for the bank. This page updates by itself.
+                    </p>
+                    <button type="button" class="mt-4 min-h-11 text-sm text-haze underline underline-offset-2" @click="another">Choose another way to pay</button>
+                </div>
+
+                <!-- Test mode: play the bank -->
+                <div v-else-if="view === 'simulate'">
+                    <h2 class="text-lg font-semibold">Test mode: you are the bank</h2>
+                    <p class="mt-2 text-haze">No real {{ chosen?.label || 'payment' }} is made. Choose what the bank should say happened.</p>
+                    <p v-if="problem" role="alert" class="mt-4 border border-gold px-4 py-3 text-sm">{{ problem }}</p>
+                    <div class="mt-5 grid gap-3">
+                        <button type="button" class="btn btn-gold py-3.5" :disabled="busy" @click="simulate('paid')">Approve: payment succeeds</button>
+                        <button type="button" class="btn border-[#6b6b6b] py-3.5 text-white hover:border-white" :disabled="busy" @click="simulate('failed')">Decline: payment fails</button>
+                    </div>
+                    <button type="button" class="mt-4 min-h-11 text-sm text-haze underline underline-offset-2" @click="another">Choose another way to pay</button>
+                </div>
+
+                <!-- Paid -->
+                <div v-else-if="view === 'paid'" class="py-4 text-center">
+                    <svg class="mx-auto size-20 text-gold" viewBox="0 0 80 80" fill="none" stroke="currentColor" role="img" aria-label="Paid">
+                        <rect x="3" y="3" width="74" height="74" stroke-width="3" />
+                        <path class="bp-tick" d="M22 41l12 12 24-27" stroke-width="5" />
+                    </svg>
+                    <h2 class="mt-5 font-display text-2xl font-bold">Payment received</h2>
+                    <p class="mt-1 text-haze">{{ money(pay.charged) }} paid to {{ state.merchant.name }}</p>
+                    <p class="mt-3 font-mono text-xs text-[#a8a8a8]">{{ pay.id }}</p>
+                    <template v-if="!embedded">
+                        <a :href="state.return_url" class="btn btn-gold mt-6 w-full py-4 text-base">Return to {{ state.merchant.name }}</a>
+                        <p v-if="returning" class="mt-3 text-sm text-haze">
+                            Returning in {{ returning }}s ·
+                            <button type="button" class="min-h-11 underline underline-offset-2" @click="stay">stay here</button>
+                        </p>
+                    </template>
+                </div>
+
+                <!-- Failed, cancelled or out of time -->
+                <div v-else class="py-4 text-center">
+                    <svg class="mx-auto size-20 text-[#a8a8a8]" viewBox="0 0 80 80" fill="none" stroke="currentColor" stroke-width="4" aria-hidden="true">
+                        <rect x="3" y="3" width="74" height="74" stroke-width="3" />
+                        <path d="M27 27l26 26M53 27L27 53" />
+                    </svg>
+                    <h2 class="mt-5 font-display text-2xl font-bold">{{ pay.status === 'cancelled' ? 'Payment cancelled' : 'Payment not completed' }}</h2>
+                    <p class="mt-1 text-haze">No money was taken.</p>
+                    <a v-if="!embedded" :href="state.return_url" class="btn btn-gold mt-6 w-full py-4 text-base">Return to {{ state.merchant.name }}</a>
+                    <button v-else type="button" class="btn btn-gold mt-6 w-full py-4 text-base" @click="tell('close')">Close</button>
+                </div>
+            </div>
+
+            <footer v-if="!['paid', 'ended'].includes(view)" class="flex flex-wrap items-center justify-between gap-x-4 border-t border-edge px-5 py-3 text-sm text-[#a8a8a8] sm:px-7">
+                <span>Secured by TN CyberTech Bank</span>
+                <button type="button" class="min-h-11 underline underline-offset-2 hover:text-white" :disabled="busy" @click="cancel">Cancel and return</button>
+            </footer>
+        </div>
+    </div>
+</template>
+
+<style>
+.bp-tick {
+    stroke-dasharray: 60;
+    stroke-dashoffset: 60;
+    animation: bp-draw 0.5s 0.15s ease-out forwards;
+}
+@keyframes bp-draw {
+    to {
+        stroke-dashoffset: 0;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .bp-tick {
+        animation: none;
+        stroke-dashoffset: 0;
+    }
+}
+/* Keep the bank's 3-D Secure step inside the checkout, not over the shop's page. */
+#bp-card iframe {
+    width: 100% !important;
+    min-height: 420px;
+    border: 0;
+}
+</style>

@@ -15,7 +15,7 @@ const company = ref(null);
 const problem = ref('');
 const note = ref('');
 
-const form = reactive({ name: '', website: '' });
+const form = reactive({ name: '', website: '', fee_bearer: 'merchant', embed_origins: '' });
 const saving = ref(false);
 
 const keys = ref([]);
@@ -32,6 +32,8 @@ onMounted(async () => {
         company.value = (await get(`/companies/${id}`)).company;
         form.name = company.value.name;
         form.website = company.value.website || '';
+        form.fee_bearer = company.value.fee_bearer;
+        form.embed_origins = company.value.embed_origins.join('\n');
         if (can('keys.view')) keys.value = (await get(`/companies/${id}/keys`)).keys;
     } catch (e) {
         problem.value = e.status === 404 ? 'No such company.' : e.message;
@@ -44,7 +46,8 @@ async function save() {
     saving.value = true;
     note.value = '';
     try {
-        company.value = (await put(`/companies/${id}`, { name: form.name, website: form.website || null })).company;
+        const sites = form.embed_origins.split(/[\s,]+/).map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
+        company.value = (await put(`/companies/${id}`, { name: form.name, website: form.website || null, fee_bearer: form.fee_bearer, embed_origins: sites })).company;
         note.value = 'Saved.';
     } catch (e) {
         note.value = firstError(e);
@@ -149,6 +152,22 @@ async function copy(text, what) {
                         <label class="label" for="website">Website <span class="font-normal text-mute">(optional)</span></label>
                         <input id="website" v-model.trim="form.website" class="field" type="url" placeholder="https://" :disabled="!can('company.edit')" />
                     </div>
+                    <fieldset class="grid gap-2" :disabled="!can('company.edit')">
+                        <legend class="label">Who pays the bank's {{ company.fee.percent }}% processing fee?</legend>
+                        <label class="flex cursor-pointer items-start gap-3 border p-3.5" :class="form.fee_bearer === 'merchant' ? 'border-ink bg-[#fffbf3] outline outline-1 outline-ink' : 'border-[#c9c6bd]'">
+                            <input v-model="form.fee_bearer" type="radio" value="merchant" class="mt-1 size-5 flex-none accent-ink" />
+                            <span><strong class="font-semibold">{{ company.name }} absorbs it</strong><span class="block text-sm text-[#454545]">Shoppers pay exactly the order total. The bank keeps its fee from what you receive.</span></span>
+                        </label>
+                        <label class="flex cursor-pointer items-start gap-3 border p-3.5" :class="form.fee_bearer === 'customer' ? 'border-ink bg-[#fffbf3] outline outline-1 outline-ink' : 'border-[#c9c6bd]'">
+                            <input v-model="form.fee_bearer" type="radio" value="customer" class="mt-1 size-5 flex-none accent-ink" />
+                            <span><strong class="font-semibold">The shopper pays it</strong><span class="block text-sm text-[#454545]">A "Processing fee" line is added at the checkout (at least {{ company.fee.minimum.toFixed(2) }}), so you receive the full order total. Applies to new payments.</span></span>
+                        </label>
+                    </fieldset>
+                    <div>
+                        <label class="label" for="sites">Other sites allowed to show the pop-up checkout <span class="font-normal text-mute">(optional)</span></label>
+                        <textarea id="sites" v-model="form.embed_origins" class="field font-mono text-sm" rows="2" placeholder="https://shop.example.com" :disabled="!can('company.edit')" aria-describedby="sites-help"></textarea>
+                        <p id="sites-help" class="mt-1.5 text-sm text-mute">One per line. Your website above, and the site each payment returns to, are always allowed.</p>
+                    </div>
                     <div v-if="can('company.edit')" class="flex flex-wrap items-center gap-2">
                         <button type="submit" class="btn btn-gold" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
                         <template v-if="can('companies.manage')">
@@ -164,7 +183,7 @@ async function copy(text, what) {
                 <h2 id="keys-h" class="mb-1 text-xl font-semibold">API keys</h2>
                 <p class="mb-3 max-w-2xl text-mute">
                     A key lets {{ company.name }}'s system start payments. Test keys use a pretend bank and move no money.
-                    Live keys will work once the bank connection is switched on.
+                    {{ company.live_ready ? 'Live keys take real payments through TN CyberTech Bank.' : 'Live keys will work once the bank connection is set up on this server.' }}
                 </p>
 
                 <p v-if="keyProblem" role="alert" class="mb-3 border-l-4 border-ink bg-white px-4 py-3 text-sm font-medium">{{ keyProblem }}</p>
@@ -247,7 +266,18 @@ Content-Type: application/json
 
 { "amount": "48.00", "currency": "USD", "reference": "BLX-10482",
   "return_url": "https://…/checkout/return",
-  "callback_url": "https://…/api/pay/callback" }</pre>
+  "callback_url": "https://…/api/pay/callback",
+  "customer": { "phone": "0771234567" } }   ← optional: saves the shopper typing it
+
+→ { "id": "pay_...", "status": "pending", "charged": "48.00", "redirect_url": "…" }</pre>
+                        <p><strong class="font-semibold">Or keep the shopper on your page</strong> with the pop-up. Add the script once, then open the same <code class="font-mono text-sm">redirect_url</code>. Treat <code class="font-mono text-sm">onSuccess</code> as a hint only and still do step 2.</p>
+<pre class="overflow-x-auto bg-coal p-4 font-mono text-[13px] leading-relaxed text-[#ededed]">&lt;script src="{{ origin }}/js/blessedpay.js"&gt;&lt;/script&gt;
+
+BlessedPay.open({
+  url: payment.redirect_url,
+  onSuccess: (p) =&gt; { /* ask your server to confirm p.id */ },
+  onCancel:  (p) =&gt; { },
+});</pre>
                         <p><strong class="font-semibold">2. Check it</strong> when the shopper comes back. Never trust the status in the return address; ask.</p>
 <pre class="overflow-x-auto bg-coal p-4 font-mono text-[13px] leading-relaxed text-[#ededed]">GET {{ origin }}/api/v1/payments/pay_...
 → { "id": "pay_...", "status": "paid" | "pending" | "failed" | "cancelled", … }</pre>

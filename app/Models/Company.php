@@ -8,13 +8,13 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
 
-#[Fillable(['name', 'slug', 'website', 'status', 'callback_secret'])]
+#[Fillable(['name', 'slug', 'website', 'status', 'callback_secret', 'fee_bearer', 'embed_origins'])]
 #[Hidden(['callback_secret'])]
 class Company extends Model
 {
     protected function casts(): array
     {
-        return ['callback_secret' => 'encrypted'];
+        return ['callback_secret' => 'encrypted', 'embed_origins' => 'array'];
     }
 
     public function users(): HasMany
