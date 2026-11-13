@@ -28,6 +28,13 @@ class PayPageController extends Controller
         $payment = $this->payments->refresh($this->find($id));
         $embed = EmbedOrigin::allowed($payment, $request->query('embed'));
 
+        if (! $payment->isFinal()) {
+            $payment->log('checkout.opened', $embed ? "The shopper opened the checkout in a pop-up on {$embed}" : 'The shopper opened the checkout page', [
+                'shown' => $embed ? 'pop-up' : 'full page',
+                'browser' => mb_substr((string) $request->userAgent(), 0, 200),
+            ], actor: 'shopper');
+        }
+
         return response()
             ->view('pay.show', ['payment' => $payment, 'state' => $this->state($payment), 'embed' => $embed])
             // Only an allowed site may draw this page inside a frame.
@@ -44,7 +51,13 @@ class PayPageController extends Controller
      */
     public function cardReturn(string $id): Response
     {
-        $url = route('pay.show', $this->find($id)->publicId()).'?card=return';
+        $payment = $this->find($id);
+        $url = route('pay.show', $payment->publicId()).'?card=return';
+
+        if (! $payment->isFinal()) {
+            $payment->log('checkout.card_returned', "The bank's card form finished and sent the shopper back", actor: 'shopper', attempt: $payment->openAttempt());
+        }
+
         $html = '<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex"><title>Confirming your payment</title>'
             .'<body style="margin:0;font:16px system-ui,sans-serif;background:#0e0e0e;color:#d0d0d0;display:grid;place-items:center;min-height:100vh">'
             .'<p>Confirming your payment…</p><script>'
@@ -95,6 +108,7 @@ class PayPageController extends Controller
         $outcome = $request->validate(['outcome' => ['required', 'in:paid,failed']])['outcome'];
 
         if ($attempt = $payment->openAttempt()) {
+            $payment->log('sandbox.answer', 'Sandbox: "'.($outcome === 'paid' ? 'Approve' : 'Decline').'" was pressed in place of the bank', actor: 'bank', attempt: $attempt);
             $this->payments->apply($attempt, $outcome === 'paid'
                 ? ['status' => 'paid', 'gateway_reference' => $attempt->gateway_uid, 'raw' => ['source' => 'sandbox']]
                 : ['status' => 'failed', 'error' => 'Declined in the sandbox.', 'raw' => ['source' => 'sandbox']]);

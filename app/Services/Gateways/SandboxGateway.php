@@ -43,6 +43,9 @@ class SandboxGateway implements BankGateway
     {
         $attempt->forceFill(['gateway_uid' => 'SBX-'.strtoupper(bin2hex(random_bytes(5)))])->save();
 
+        $attempt->payment->log('bank.request', 'Sandbox: a pretend bank session was opened for '.$attempt->label().' (no real bank is called in test mode)',
+            ['pretend_bank_id' => $attempt->gateway_uid], actor: 'bank', attempt: $attempt);
+
         return ['kind' => 'simulate'];
     }
 

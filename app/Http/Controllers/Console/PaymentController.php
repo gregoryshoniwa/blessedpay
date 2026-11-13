@@ -7,6 +7,8 @@ use App\Models\ActivityLog;
 use App\Models\Payment;
 use App\Services\CallbackSender;
 use App\Services\PaymentService;
+use App\Support\Diagnosis;
+use App\Support\Phone;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -40,13 +42,36 @@ class PaymentController extends Controller
     {
         $this->need($request, 'payments.view');
 
-        $page = $this->filtered($request)->with('company:id,name')->latest('created_at')->paginate(25);
+        $perPage = in_array((int) $request->query('per_page'), [10, 25, 50, 100], true) ? (int) $request->query('per_page') : 25;
+        $query = $this->filtered($request)->with('company:id,name')->withCount('attempts');
+
+        match ($request->query('sort')) {
+            'oldest' => $query->oldest('created_at')->oldest('id'),
+            'amount_high' => $query->orderByDesc('amount')->latest('id'),
+            'amount_low' => $query->orderBy('amount')->latest('id'),
+            default => $query->latest('created_at')->latest('id'),
+        };
+
+        $page = $query->paginate($perPage);
+
+        // What the whole filtered set adds up to, not just this page.
+        $totals = $this->filtered($request)->selectRaw('status, currency, count(*) as n, sum(amount) as total')
+            ->groupBy('status', 'currency')->get();
 
         return response()->json([
-            'payments' => collect($page->items())->map(fn (Payment $p) => self::row($p)),
+            'payments' => collect($page->items())->map(fn (Payment $p) => self::row($p) + ['tries' => (int) $p->attempts_count]),
             'page' => $page->currentPage(),
             'pages' => $page->lastPage(),
+            'per_page' => $perPage,
+            'from' => $page->firstItem(),
+            'to' => $page->lastItem(),
             'total' => $page->total(),
+            'summary' => [
+                'by_status' => $totals->groupBy('status')->map(fn ($rows) => (int) $rows->sum('n')),
+                'paid' => $totals->where('status', 'paid')->values()->map(fn ($r) => [
+                    'currency' => $r->currency, 'count' => (int) $r->n, 'total' => number_format((float) $r->total, 2, '.', ''),
+                ]),
+            ],
         ]);
     }
 
@@ -58,12 +83,13 @@ class PaymentController extends Controller
 
         return response()->streamDownload(function () use ($query) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['Payment', 'Company', 'Mode', 'Reference', 'Amount', 'Currency', 'Status', 'Method', 'Bank reference', 'Created', 'Paid']);
+            fputcsv($out, ['Payment', 'Company', 'Mode', 'Reference', 'Amount', 'Fee on top', 'Currency', 'Status', 'Paid with', 'Bank reference', 'Callback', 'Created', 'Paid', 'Finished']);
             $query->chunk(500, function ($payments) use ($out) {
                 foreach ($payments as $p) {
                     fputcsv($out, [
-                        $p->publicId(), $p->company->name, $p->mode, self::csvSafe($p->reference), $p->amount, $p->currency,
-                        $p->status, $p->method, $p->gateway_reference, $p->created_at?->toIso8601String(), $p->paid_at?->toIso8601String(),
+                        $p->publicId(), $p->company->name, $p->mode, self::csvSafe($p->reference), $p->amount, $p->fee, $p->currency,
+                        $p->status, $p->method, $p->gateway_reference, $p->callback_status,
+                        $p->created_at?->toIso8601String(), $p->paid_at?->toIso8601String(), $p->finished_at?->toIso8601String(),
                     ]);
                 }
             });
@@ -84,13 +110,17 @@ class PaymentController extends Controller
             'metadata' => $payment->metadata,
             'callback_attempts' => $payment->callback_attempts,
             'expires_at' => $payment->expires_at?->toIso8601String(),
+            'finished_at' => $payment->finished_at?->toIso8601String(),
+            'diagnosis' => Diagnosis::of($payment),
             'attempts' => $payment->attempts->map(fn ($a) => [
                 'id' => $a->id, 'method' => $a->label(), 'status' => $a->status, 'reference' => $a->reference,
                 'bank_id' => $a->gateway_uid, 'phone' => $a->phone, 'amount' => $a->amount, 'error' => $a->error,
                 'at' => $a->created_at?->toIso8601String(),
             ]),
             'events' => $payment->events->map(fn ($e) => [
-                'id' => $e->id, 'type' => $e->type, 'summary' => $e->summary, 'data' => $e->data,
+                'id' => $e->id, 'type' => $e->type, 'actor' => $e->actor, 'level' => $e->level,
+                'attempt_id' => $e->attempt_id, 'ms' => $e->duration_ms, 'summary' => $e->summary,
+                'data' => $e->data ? collect($e->data)->except('signature')->all() : null,
                 'at' => $e->created_at?->toIso8601String(),
             ]),
         ]]);
@@ -99,8 +129,10 @@ class PaymentController extends Controller
     /** Ask the bank again about a payment that is still pending. */
     public function refresh(Request $request, string $id, PaymentService $payments): JsonResponse
     {
-        $this->need($request, 'payments.view');
-        $payments->refresh($this->find($request, $id));
+        $user = $this->need($request, 'payments.view');
+        $payment = $this->find($request, $id);
+        $payment->log('staff.recheck', "{$user->name} asked the bank again from the console", actor: 'staff');
+        $payments->refresh($payment, 0);
 
         return $this->show($request, $id);
     }
@@ -111,6 +143,7 @@ class PaymentController extends Controller
         $payment = $this->find($request, $id);
         abort_unless($payment->isFinal() && $payment->callback_url, 422, 'There is no callback to send for this payment.');
 
+        $payment->log('staff.callback_resent', "{$request->user()->name} sent the callback again from the console", actor: 'staff');
         $ok = $callbacks->send($payment);
         ActivityLog::record($request, 'callback.resent', "Sent the callback again for {$payment->reference}", $payment->company_id);
 
@@ -137,6 +170,11 @@ class PaymentController extends Controller
         $request->validate([
             'status' => ['nullable', 'in:pending,paid,failed,cancelled'],
             'mode' => ['nullable', 'in:test,live'],
+            'method' => ['nullable', 'in:card,ecocash,bank'],
+            'currency' => ['nullable', 'in:USD,ZWG'],
+            'callback' => ['nullable', 'in:delivered,failed,none'],
+            'min' => ['nullable', 'numeric', 'min:0'],
+            'max' => ['nullable', 'numeric', 'min:0'],
             'from' => ['nullable', 'date'],
             'to' => ['nullable', 'date'],
             'q' => ['nullable', 'string', 'max:100'],
@@ -147,12 +185,25 @@ class PaymentController extends Controller
             ->when($request->filled('mode'), fn ($q) => $q->where('mode', $request->query('mode')))
             ->when($request->filled('from'), fn ($q) => $q->where('created_at', '>=', $request->date('from')->startOfDay()))
             ->when($request->filled('to'), fn ($q) => $q->where('created_at', '<=', $request->date('to')->endOfDay()))
+            ->when($request->filled('currency'), fn ($q) => $q->where('currency', $request->query('currency')))
+            ->when($request->filled('min'), fn ($q) => $q->where('amount', '>=', $request->query('min')))
+            ->when($request->filled('max'), fn ($q) => $q->where('amount', '<=', $request->query('max')))
+            // "Paid with" is only known once paid, so a way of paying also matches payments where it was TRIED.
+            ->when($request->filled('method'), fn ($q) => $q->where(fn ($w) => $w->where('method', $request->query('method'))
+                ->orWhereHas('attempts', fn ($a) => $a->where('method', $request->query('method')))))
+            ->when($request->filled('callback'), fn ($q) => $request->query('callback') === 'none'
+                ? $q->whereNull('callback_status')
+                : $q->where('callback_status', $request->query('callback')))
             ->when($request->filled('q'), function ($q) use ($request) {
                 $term = trim($request->query('q'));
                 $id = str_starts_with($term, 'pay_') ? substr($term, 4) : $term;
+                $phone = Phone::zimbabwe($term);
                 $q->where(fn ($w) => $w->where('reference', 'like', $term.'%')
                     ->orWhere('id', $id)
-                    ->orWhere('gateway_reference', $term));
+                    ->orWhere('gateway_reference', $term)
+                    // what the bank knows it by: our reference for a try, or the bank's own id
+                    ->orWhereHas('attempts', fn ($a) => $a->where(fn ($t) => $t->where('reference', $term)->orWhere('gateway_uid', $term)
+                        ->when($phone, fn ($p) => $p->orWhere('phone', $phone)))));
             });
     }
 
@@ -174,6 +225,7 @@ class PaymentController extends Controller
             'callback_status' => $p->callback_status,
             'created_at' => $p->created_at?->toIso8601String(),
             'paid_at' => $p->paid_at?->toIso8601String(),
+            'finished_at' => $p->finished_at?->toIso8601String(),
         ];
     }
 

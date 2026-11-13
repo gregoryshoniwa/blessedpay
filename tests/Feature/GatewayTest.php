@@ -144,7 +144,7 @@ class GatewayTest extends TestCase
         });
 
         $this->assertSame(
-            ['payment.created', 'attempt.started', 'payment.paid', 'callback.delivered'],
+            ['payment.created', 'checkout.opened', 'attempt.started', 'bank.request', 'sandbox.answer', 'payment.paid', 'callback.delivered'],
             $payment->events->pluck('type')->all(),
         );
     }

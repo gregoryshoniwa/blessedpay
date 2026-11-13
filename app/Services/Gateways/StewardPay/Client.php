@@ -29,6 +29,19 @@ class Client
 {
     private const TOKEN_CACHE = 'stewardpay.token';
 
+    /** Told about every exchange with the bank, for the payment's audit trail. */
+    private ?\Closure $observer = null;
+
+    /**
+     * Watch the calls made from now on. The observer is given
+     * {call, method, path, request, http, response, error, ms} with secrets
+     * already removed (see forLog).
+     */
+    public function observe(?\Closure $observer): void
+    {
+        $this->observer = $observer;
+    }
+
     public function isConfigured(): bool
     {
         return filled($this->config('client_id')) && filled($this->config('client_secret')) && filled($this->config('encryption_key'));
@@ -130,20 +143,71 @@ class Client
         return $data;
     }
 
+    /**
+     * What may be kept and shown of something sent to or received from the
+     * bank: scrub(), and the values that work like passwords are blanked — the
+     * access token, the card session, and the bank page address (it can carry
+     * our token).
+     */
+    public static function forLog(mixed $data): mixed
+    {
+        if (! is_array($data)) {
+            return is_string($data) ? mb_substr($data, 0, 2000) : $data;
+        }
+
+        $data = self::scrub($data);
+
+        foreach ($data as $key => $value) {
+            if (in_array($key, ['access_token', 'refresh_token', 'token', 'targetUrl', 'sessionId', 'successIndicator'], true)) {
+                $data[$key] = filled($value) ? '[hidden]' : $value;
+            } elseif (is_array($value)) {
+                $data[$key] = self::forLog($value);
+            }
+        }
+
+        return $data;
+    }
+
     private function send(string $method, string $path, array $body = [], ?int $timeout = null): Response
     {
+        $started = microtime(true);
+
         try {
             $response = $this->request($timeout)->{$method}($path, $body);
 
             if ($response->status() === 401) { // token expired between cache and use
+                $this->tell('request', $method, $path, $body, $started, $response);
                 Cache::forget(self::TOKEN_CACHE);
+                $started = microtime(true);
                 $response = $this->request($timeout)->{$method}($path, $body);
             }
 
+            $this->tell('request', $method, $path, $body, $started, $response);
+
             return $response;
         } catch (ConnectionException $e) {
+            $this->tell('request', $method, $path, $body, $started, null, $e->getMessage());
+
             throw new GatewayUnavailable('The bank could not be reached. Please try again in a moment.', previous: $e);
         }
+    }
+
+    private function tell(string $call, string $method, string $path, array $body, float $started, ?Response $response, ?string $error = null): void
+    {
+        if (! $this->observer) {
+            return;
+        }
+
+        ($this->observer)([
+            'call' => $call,
+            'method' => strtoupper($method),
+            'path' => $path,
+            'request' => $body === [] ? null : self::forLog($body),
+            'http' => $response?->status(),
+            'response' => $response ? self::forLog($response->json() ?? $response->body()) : null,
+            'error' => $error !== null ? mb_substr($error, 0, 300) : null,
+            'ms' => (int) round((microtime(true) - $started) * 1000),
+        ]);
     }
 
     private function request(?int $timeout): PendingRequest
@@ -161,16 +225,19 @@ class Client
             return $cached;
         }
 
+        $started = microtime(true);
+        $credentials = ['clientId' => $this->config('client_id'), 'clientSecret' => $this->config('client_secret')];
+
         try {
             $response = Http::baseUrl($this->config('base_url'))->acceptJson()->asJson()->timeout(15)->connectTimeout(8)
-                ->post('/merchant/client/token', [
-                    'clientId' => $this->config('client_id'),
-                    'clientSecret' => $this->config('client_secret'),
-                ]);
+                ->post('/merchant/client/token', $credentials);
         } catch (ConnectionException $e) {
+            $this->tell('token', 'post', '/merchant/client/token', $credentials, $started, null, $e->getMessage());
+
             throw new GatewayUnavailable('The bank could not be reached. Please try again in a moment.', previous: $e);
         }
 
+        $this->tell('token', 'post', '/merchant/client/token', $credentials, $started, $response);
         $token = $response->json('body.access_token');
 
         if (! $response->successful() || ! is_string($token) || $token === '') {

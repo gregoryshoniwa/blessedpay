@@ -1,5 +1,5 @@
 <script setup>
-import { money, when } from '../format.js';
+import { METHODS, money, when } from '../format.js';
 import { session } from '../session.js';
 import StatusBadge from './StatusBadge.vue';
 
@@ -8,15 +8,17 @@ defineProps({ payments: { type: Array, required: true }, empty: { type: String, 
 
 <template>
     <div class="relative overflow-x-auto border border-line bg-white">
-        <table class="w-full min-w-[760px] border-collapse text-left text-[15px]">
+        <table class="w-full min-w-[860px] border-collapse text-left text-[15px]">
             <thead>
                 <tr class="bg-paper text-[13px] text-[#454545]">
                     <th scope="col" class="px-4 py-3 font-semibold">Reference</th>
                     <th v-if="session.user.is_staff" scope="col" class="px-4 py-3 font-semibold">Company</th>
                     <th scope="col" class="px-4 py-3 text-right font-semibold">Amount</th>
                     <th scope="col" class="px-4 py-3 font-semibold">Status</th>
+                    <th scope="col" class="px-4 py-3 font-semibold">Paid with</th>
                     <th scope="col" class="px-4 py-3 font-semibold">Callback</th>
                     <th scope="col" class="px-4 py-3 font-semibold">Started</th>
+                    <th scope="col" class="px-4 py-3"><span class="sr-only">Open</span></th>
                 </tr>
             </thead>
             <tbody>
@@ -28,14 +30,22 @@ defineProps({ payments: { type: Array, required: true }, empty: { type: String, 
                     <td v-if="session.user.is_staff" class="px-4 py-3.5">{{ p.company?.name }}</td>
                     <td class="whitespace-nowrap px-4 py-3.5 text-right font-medium tabular-nums">{{ money(p.amount, p.currency) }}</td>
                     <td class="px-4 py-3.5"><StatusBadge :status="p.status" /></td>
+                    <td class="whitespace-nowrap px-4 py-3.5">
+                        <template v-if="p.method">{{ METHODS[p.method] || p.method }}</template>
+                        <span v-else class="text-mute">—</span>
+                        <div v-if="p.tries > 1 || (p.tries === 1 && !p.method)" class="text-xs text-mute">{{ p.tries }} {{ p.tries === 1 ? 'try' : 'tries' }}</div>
+                    </td>
                     <td class="px-4 py-3.5">
                         <StatusBadge v-if="p.callback_status" :status="p.callback_status" />
                         <span v-else class="text-mute">—</span>
                     </td>
                     <td class="whitespace-nowrap px-4 py-3.5 text-mute">{{ when(p.created_at) }}</td>
+                    <td class="whitespace-nowrap px-4 py-3.5 text-right">
+                        <router-link :to="`/payments/${p.id}`" class="link text-sm" :aria-label="`See every step of ${p.reference}`">See steps</router-link>
+                    </td>
                 </tr>
                 <tr v-if="!payments.length">
-                    <td :colspan="session.user.is_staff ? 6 : 5" class="px-4 py-10 text-center text-mute">{{ empty }}</td>
+                    <td :colspan="session.user.is_staff ? 8 : 7" class="px-4 py-10 text-center text-mute">{{ empty }}</td>
                 </tr>
             </tbody>
         </table>

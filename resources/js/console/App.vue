@@ -11,7 +11,7 @@ const links = computed(() => {
     if (!user) return [];
     return [
         { to: '/', label: 'Overview', exact: true },
-        { to: '/payments', label: 'Payments' },
+        { to: '/payments', label: 'Transactions' },
         user.is_staff
             ? { to: '/companies', label: 'Companies' }
             : { to: `/companies/${user.company.id}`, label: 'Company and keys' },

@@ -27,6 +27,16 @@ const chosen = computed(() => state.methods.find((m) => m.id === method.value));
 const needsPhone = computed(() => chosen.value?.needs.includes('phone'));
 const hasFee = computed(() => Number(pay.value.fee) > 0);
 
+// The marks of what we accept, shown on white as their owners draw them (never recoloured).
+const MARKS = {
+    ecocash: [{ src: '/pay/ecocash.svg', alt: 'EcoCash', w: 58 }],
+    card: [
+        { src: '/pay/visa.svg', alt: 'Visa', w: 40 },
+        { src: '/pay/mastercard.svg', alt: 'Mastercard', w: 30 },
+    ],
+    bank: [{ src: '/pay/tncb.png', alt: 'TN CyberTech Bank', w: 76 }],
+};
+
 const secondsLeft = computed(() => (pay.value.expires_at ? Math.max(0, Math.round((new Date(pay.value.expires_at).getTime() - now.value) / 1000)) : null));
 const clock = computed(() => (secondsLeft.value === null ? '' : `${Math.floor(secondsLeft.value / 60)}:${String(secondsLeft.value % 60).padStart(2, '0')}`));
 
@@ -290,12 +300,12 @@ const waitingCopy = computed(() =>
 </script>
 
 <template>
-    <div ref="root" class="bp-checkout mx-auto w-full" :class="embedded ? 'max-w-none' : 'max-w-md'">
+    <div ref="root" class="bp-checkout mx-auto w-full" :class="embedded ? 'max-w-none' : 'max-w-md lg:max-w-none'">
         <p v-if="pay.mode === 'test'" class="bg-gold px-4 py-1.5 text-center font-mono text-xs font-medium text-black">TEST MODE · NO MONEY MOVES</p>
 
-        <div class="border-gold bg-coal text-white" :class="embedded ? 'min-h-[420px]' : 'border shadow-[0_0_60px_rgba(224,176,58,0.18)]'">
-            <!-- Who is being paid, and how much -->
-            <header class="border-b border-edge px-5 py-5 sm:px-7" :class="embedded ? 'pr-16' : ''">
+        <div class="text-white" :class="embedded ? 'min-h-[420px] bg-coal' : 'border border-[#3a3a3a] border-t-2 border-t-gold bg-[#0e0e0e]/92 shadow-[0_30px_80px_rgba(0,0,0,0.7)] backdrop-blur-md'">
+            <!-- Who is being paid, and how much. On a wide full page this sits beside the card instead (see pay/show.blade.php). -->
+            <header class="border-b border-edge px-5 py-5 sm:px-7" :class="embedded ? 'pr-16' : 'lg:hidden'">
                 <div class="flex items-center justify-between gap-3 font-mono text-xs text-[#a8a8a8]">
                     <span>PAYING</span>
                     <span class="truncate">REF {{ pay.reference }}</span>
@@ -330,11 +340,16 @@ const waitingCopy = computed(() =>
                     <fieldset class="mt-4 grid gap-2">
                         <legend class="sr-only">Ways to pay</legend>
                         <div v-for="m in state.methods" :key="m.id" class="border" :class="method === m.id ? 'border-gold bg-[#17140c]' : 'border-[#3a3a3a]'">
-                            <label class="flex min-h-14 cursor-pointer items-center gap-3 px-4 py-3">
+                            <label class="flex min-h-16 cursor-pointer items-center gap-3 px-4 py-3">
                                 <input v-model="method" type="radio" name="method" :value="m.id" class="size-5 flex-none accent-[#e0b03a]" />
-                                <span class="min-w-0">
+                                <span class="min-w-0 flex-1">
                                     <span class="block font-semibold">{{ m.label }}</span>
                                     <span class="block text-sm text-[#a8a8a8]">{{ m.hint }}</span>
+                                </span>
+                                <span v-if="MARKS[m.id]" class="flex flex-none gap-1.5">
+                                    <span v-for="mark in MARKS[m.id]" :key="mark.src" class="flex h-10 items-center bg-white px-2">
+                                        <img :src="mark.src" :alt="mark.alt" :width="mark.w" :style="{ width: mark.w + 'px' }" class="max-h-7 object-contain" />
+                                    </span>
                                 </span>
                             </label>
 

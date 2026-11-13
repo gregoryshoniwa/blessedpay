@@ -44,7 +44,10 @@ class StewardPayCallbackController extends Controller
         $attempt->payment->log(
             'bank.callback',
             'The bank sent a notice ('.($payload['status'] ?? 'no status').', signature '.($signed ? 'valid' : 'NOT valid').')',
-            Client::scrub($payload),
+            Client::forLog($payload),
+            actor: 'bank',
+            level: $signed ? 'info' : 'warn',
+            attempt: $attempt,
         );
 
         $gateway = Gateways::get('stewardpay');

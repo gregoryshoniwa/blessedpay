@@ -74,9 +74,25 @@ class Payment extends Model
         return self::find(str_starts_with($publicId, 'pay_') ? substr($publicId, 4) : $publicId);
     }
 
-    public function log(string $type, string $summary, ?array $data = null): PaymentEvent
-    {
-        return $this->events()->create(['type' => $type, 'summary' => $summary, 'data' => $data]);
+    /** Add a step to the audit trail (see PaymentEvent for actor and level). */
+    public function log(
+        string $type,
+        string $summary,
+        ?array $data = null,
+        string $actor = 'system',
+        string $level = 'info',
+        ?PaymentAttempt $attempt = null,
+        ?int $ms = null,
+    ): PaymentEvent {
+        return $this->events()->create([
+            'type' => $type,
+            'actor' => $actor,
+            'level' => $level,
+            'attempt_id' => $attempt?->id,
+            'duration_ms' => $ms,
+            'summary' => mb_substr($summary, 0, 255),
+            'data' => $data,
+        ]);
     }
 
     /** What the API and callbacks say about a payment. Never includes secrets. */

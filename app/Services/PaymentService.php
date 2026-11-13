@@ -60,11 +60,18 @@ class PaymentService
             return [$this->sameOrFail($this->findByKey($company, $mode, $idempotencyKey), $data), false];
         }
 
-        $payment->log('payment.created', "Payment created for {$payment->currency} {$payment->amount}", [
+        $payment->log('payment.created', "The company's system asked for {$payment->currency} {$payment->amount} ({$mode} key)", [
             'reference' => $payment->reference,
-            'idempotency_key' => $idempotencyKey,
+            'amount' => $payment->amount,
             'fee_on_top' => $payment->fee,
-        ]);
+            'currency' => $payment->currency,
+            'description' => $payment->description,
+            'return_url' => $payment->return_url,
+            'callback_url' => $payment->callback_url,
+            'idempotency_key' => $idempotencyKey,
+            'bank' => $payment->gateway,
+            'open_until' => $payment->expires_at?->toIso8601String(),
+        ], actor: 'merchant');
 
         return [$payment, true];
     }
@@ -108,7 +115,11 @@ class PaymentService
             ]);
         });
 
-        $payment->log('attempt.started', 'Shopper chose '.$attempt->label(), ['attempt' => $attempt->reference]);
+        $payment->log('attempt.started', 'The shopper chose '.$attempt->label(), [
+            'our_reference' => $attempt->reference,
+            'amount' => $attempt->amount,
+            'phone' => $attempt->phone,
+        ], actor: 'shopper', attempt: $attempt);
 
         if ($gateway->beginsSlowly($method)) {
             // The bank does not answer until the shopper does. Tell the browser
@@ -123,10 +134,8 @@ class PaymentService
                 @set_time_limit(200);
                 try {
                     $this->begin($attempt);
-                } catch (Throwable $e) {
-                    if (! $e instanceof GatewayUnavailable) {
-                        report($e);
-                    }
+                } catch (GatewayUnavailable) {
+                    // already written to the trail by begin()
                 }
             });
 
@@ -142,9 +151,19 @@ class PaymentService
         try {
             $step = Gateways::get($attempt->payment->gateway)->begin($attempt);
         } catch (GatewayUnavailable $e) {
-            $this->apply($attempt, ['status' => 'failed', 'error' => $e->getMessage()]);
+            $this->apply($attempt, ['status' => 'failed', 'error' => $e->getMessage(), 'actor' => 'bank']);
 
             throw $e;
+        } catch (Throwable $e) {
+            // Our own code broke, not the bank. Say so in the trail, so nobody blames the bank for it.
+            report($e);
+            $attempt->payment->log('system.error', 'BlessedPay hit an error while starting '.$attempt->label(), [
+                'error' => class_basename($e).': '.mb_substr($e->getMessage(), 0, 500),
+                'where' => basename($e->getFile()).':'.$e->getLine(),
+            ], actor: 'system', level: 'error', attempt: $attempt);
+            $this->apply($attempt, ['status' => 'failed', 'error' => 'Something went wrong on our side. Please try again.', 'actor' => 'system']);
+
+            throw new GatewayUnavailable('Something went wrong on our side. Please try again.', previous: $e);
         }
 
         if (isset($step['result'])) {
@@ -169,7 +188,8 @@ class PaymentService
 
         if ($result['status'] === 'failed') {
             $attempt->forceFill(['status' => 'failed', 'error' => $result['error'] ?? 'The payment did not go through.'])->save();
-            $payment->log('attempt.failed', $attempt->label().' did not go through: '.$attempt->error, $result['raw'] ?? null);
+            $payment->log('attempt.failed', $attempt->label().' did not go through: '.$attempt->error, $result['raw'] ?? null,
+                actor: $result['actor'] ?? 'bank', level: 'error', attempt: $attempt);
 
             return;
         }
@@ -178,7 +198,8 @@ class PaymentService
 
         if ($payment->fresh()->status === 'paid') {
             // Two tries were both approved. The shopper has paid twice: staff must refund one.
-            $payment->log('attempt.paid_twice', 'A second try ('.$attempt->label().", {$attempt->reference}) was ALSO paid. Refund needed.", $result['raw'] ?? null);
+            $payment->log('attempt.paid_twice', 'A second try ('.$attempt->label().", {$attempt->reference}) was ALSO paid. Refund needed.", $result['raw'] ?? null,
+                actor: 'bank', level: 'error', attempt: $attempt);
             report(new \RuntimeException("Payment {$payment->id} was paid twice (attempt {$attempt->reference})."));
 
             return;
@@ -188,6 +209,7 @@ class PaymentService
             'gateway_reference' => $result['gateway_reference'] ?? $attempt->gateway_uid,
             'method' => $attempt->method,
             'raw' => $result['raw'] ?? null,
+            'attempt' => $attempt,
         ]);
     }
 
@@ -204,12 +226,12 @@ class PaymentService
                 // "Paid" beats an earlier cancel or expiry: the money really moved.
                 if (! ($status === 'paid' && $fresh->status !== 'paid')) {
                     if ($fresh->status !== $status) {
-                        $fresh->log('status.ignored', "Ignored late \"{$status}\": payment is already {$fresh->status}", $details['raw'] ?? null);
+                        $fresh->log('status.ignored', "Ignored late \"{$status}\": payment is already {$fresh->status}", $details['raw'] ?? null, level: 'warn');
                     }
 
                     return false;
                 }
-                $fresh->log('status.corrected', "Was {$fresh->status}, but the bank confirms it was paid");
+                $fresh->log('status.corrected', "Was {$fresh->status}, but the bank confirms it was paid", level: 'warn');
             }
 
             if (! in_array($status, Payment::FINAL, true)) {
@@ -225,7 +247,12 @@ class PaymentService
             ])->save();
 
             $summary = $details['summary'] ?? 'Payment '.$status.($status === 'paid' && $fresh->method ? " by {$fresh->method}" : '');
-            $fresh->log("payment.{$status}", $summary, $details['raw'] ?? null);
+            $fresh->log("payment.{$status}", $summary, $details['raw'] ?? null,
+                actor: $details['actor'] ?? 'system',
+                level: match ($status) {
+                    'paid' => 'ok', 'cancelled' => 'warn', default => 'error'
+                },
+                attempt: $details['attempt'] ?? null);
 
             return true;
         });
@@ -266,7 +293,11 @@ class PaymentService
         $payment->refresh();
 
         if (! $payment->isFinal() && $payment->expires_at?->isPast() && ! $payment->attempts()->where('status', 'pending')->exists()) {
-            $payment = $this->settle($payment, 'failed', ['summary' => 'Payment expired: it was not completed in time']);
+            $payment = $this->settle($payment, 'failed', [
+                'summary' => 'Payment expired: it was not completed in time',
+                // Out of time with nothing failing is the shopper walking away, not a fault.
+                'actor' => $payment->attempts()->exists() ? 'system' : 'shopper',
+            ]);
         }
 
         return $payment;
@@ -281,7 +312,7 @@ class PaymentService
 
         $payment->attempts()->where('status', 'pending')->update(['status' => 'abandoned']);
 
-        return $this->settle($payment, 'cancelled', ['summary' => 'Cancelled by the shopper']);
+        return $this->settle($payment, 'cancelled', ['summary' => 'Cancelled by the shopper', 'actor' => 'shopper']);
     }
 
     /** Where the shopper goes when we are finished with them. */

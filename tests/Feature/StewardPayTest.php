@@ -6,12 +6,15 @@ use App\Models\ApiKey;
 use App\Models\Company;
 use App\Models\Payment;
 use App\Models\PaymentAttempt;
+use App\Models\User;
 use App\Services\Fees;
 use App\Services\Gateways\StewardPay\Client;
 use App\Support\Phone;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /** The real bank (StewardPay / CyberPay) and the checkout, with the bank faked. */
@@ -362,5 +365,147 @@ class StewardPayTest extends TestCase
 
         $this->assertTrue(app(Client::class)->callbackHashMatches(['amount' => 1290, 'trace' => 'T', 'reference' => 'R', 'hash' => strtoupper(hash('sha256', 'enc-key1290TR'))]));
         $this->assertFalse(app(Client::class)->callbackHashMatches(['amount' => 1290, 'trace' => 'T', 'reference' => 'R']));
+    }
+
+    // ── The audit trail ─────────────────────────────────────────────────────
+
+    private function trail(string $id): TestResponse
+    {
+        $staff = User::factory()->create(['company_id' => null, 'role' => 'super_admin', 'status' => 'active']);
+
+        return $this->actingAs($staff)->getJson("/console-api/payments/{$id}")->assertOk();
+    }
+
+    public function test_the_trail_keeps_every_exchange_with_the_bank_without_its_secrets(): void
+    {
+        $this->bank([
+            self::BANK.'/sdk/action' => Http::response($this->envelope([
+                'uid' => 'u1', 'status' => 'PENDING', 'amount' => '48.00', 'clientSecret' => 'shh-secret',
+                'sessionId' => 'SESSION0002', 'targetUrl' => 'https://na.gateway.mastercard.com/checkout/pay/SESSION0002',
+            ])),
+            self::BANK.'/sdk/mpgs/poll/u1' => Http::sequence()
+                ->push($this->envelope(['uid' => 'u1', 'status' => 'PENDING', 'amount' => '48.00']))
+                ->push($this->envelope(['uid' => 'u1', 'status' => 'PENDING', 'amount' => '48.00']))
+                ->push($this->envelope(['uid' => 'u1', 'status' => 'PENDING', 'amount' => '48.00']))
+                ->push($this->envelope(['uid' => 'u1', 'status' => 'FAILED', 'errorMessage' => 'Do not honour', 'amount' => '48.00'])),
+        ]);
+        $id = $this->payment();
+        $this->get("/p/{$id}")->assertOk();
+        $this->postJson("/p/{$id}/pay", ['method' => 'card'])->assertOk();
+        foreach (range(1, 4) as $i) {
+            $this->travel(5)->seconds();
+            $this->getJson("/p/{$id}/status")->assertOk();
+        }
+
+        $payment = $this->trail($id)->json('payment');
+        $events = collect($payment['events']);
+
+        // Who did what, in order. Three identical "still pending" answers are ONE line, counted.
+        $this->assertSame(
+            ['payment.created', 'checkout.opened', 'attempt.started', 'bank.token', 'bank.request', 'bank.check', 'bank.check', 'attempt.failed'],
+            $events->pluck('type')->all(),
+        );
+        $this->assertSame(['merchant', 'shopper', 'shopper', 'bank', 'bank', 'bank', 'bank', 'bank'], $events->pluck('actor')->all());
+        $this->assertSame(3, $events[5]['data']['repeats']);
+        $this->assertSame('error', $events[6]['level']);
+
+        // What was sent and what came back are both there, with how long it took…
+        $start = $events[4];
+        $this->assertSame('POST /merchant/sdk/action', $start['data']['request']);
+        $this->assertSame('48.00', $start['data']['sent']['amount']);
+        $this->assertSame(200, $start['data']['http_status']);
+        $this->assertSame('PENDING', $start['data']['received']['body']['status']);
+        $this->assertIsInt($start['ms']);
+        $this->assertSame('Do not honour', $events[6]['data']['received']['body']['errorMessage']);
+
+        // …but nothing that works like a password.
+        $all = json_encode($payment);
+        foreach (['shh-secret', 'enc-key', 'tok-1', 'SESSION0002', 'checkout/pay'] as $secret) {
+            $this->assertStringNotContainsString($secret, $all);
+        }
+        $this->assertStringNotContainsString('"hash"', $all);
+
+        // And the verdict points at the bank, with the bank's own words.
+        $this->assertSame('bank', $payment['diagnosis']['where']);
+        $this->assertStringContainsString('Do not honour', $payment['diagnosis']['detail']);
+    }
+
+    public function test_the_trail_tells_the_bank_being_down_from_our_own_fault(): void
+    {
+        // The bank cannot be reached at all.
+        $this->bank([self::BANK.'/sdk/action' => fn () => throw new ConnectionException('Connection timed out after 8000 ms')]);
+        $id = $this->payment();
+        $this->postJson("/p/{$id}/pay", ['method' => 'card'])->assertStatus(422);
+
+        $payment = $this->trail($id)->json('payment');
+        $this->assertSame('bank', $payment['diagnosis']['where']);
+        $call = collect($payment['events'])->firstWhere('type', 'bank.request');
+        $this->assertSame('error', $call['level']);
+        $this->assertStringContainsString('timed out', $call['data']['connection_error']);
+
+        // Our own code breaks: that is said plainly, and the shopper gets a calm message.
+        $this->mock(Client::class, function ($mock) {
+            $mock->shouldReceive('isConfigured')->andReturn(true);
+            $mock->shouldReceive('observe');
+            $mock->shouldReceive('initialize')->andThrow(new \LogicException('Undefined array key "x"'));
+        });
+        $second = $this->payment(['reference' => 'BLX-2']);
+        $this->postJson("/p/{$second}/pay", ['method' => 'card'])->assertStatus(422)->assertJsonPath('message', 'Something went wrong on our side. Please try again.');
+
+        $payment = $this->trail($second)->json('payment');
+        $this->assertSame('system', $payment['diagnosis']['where']);
+        $this->assertStringContainsString('LogicException', collect($payment['events'])->firstWhere('type', 'system.error')['data']['error']);
+    }
+
+    public function test_the_trail_blames_the_companys_system_when_only_its_callback_fails(): void
+    {
+        Http::fake([
+            self::BANK.'/client/token' => Http::response($this->envelope(['access_token' => 'tok-1', 'expires_in' => 300])),
+            self::BANK.'/sdk/action' => Http::response($this->envelope(['uid' => 'e1', 'status' => 'SUCCESS', 'amount' => '48.00', 'transaction' => ['debitReference' => 'FT1']])),
+            'shop.test/*' => Http::response('<h1>500 Server Error</h1>', 500),
+        ]);
+        $id = $this->payment();
+        $this->postJson("/p/{$id}/pay", ['method' => 'ecocash', 'phone' => '0771234567'])->assertOk();
+        $this->app->terminate();
+
+        $payment = $this->trail($id)->json('payment');
+        $this->assertSame('paid', $payment['status']);
+        $this->assertSame('merchant', $payment['diagnosis']['where']);
+        $callback = collect($payment['events'])->firstWhere('type', 'callback.failed');
+        $this->assertSame('merchant', $callback['actor']);
+        $this->assertStringContainsString('500 Server Error', $callback['data']['their_answer']);
+        $this->assertSame('payment.paid', $callback['data']['sent']['event']);
+    }
+
+    public function test_transactions_can_be_filtered_sorted_and_paged(): void
+    {
+        $this->bank([
+            self::BANK.'/sdk/action' => Http::response($this->envelope(['uid' => 'e1', 'status' => 'SUCCESS', 'amount' => '12.00', 'transaction' => ['debitReference' => 'FT1']])),
+        ]);
+        $paid = $this->payment(['amount' => '12.00', 'reference' => 'A-1']);
+        $this->postJson("/p/{$paid}/pay", ['method' => 'ecocash', 'phone' => '0771234567'])->assertOk();
+        $this->app->terminate();
+        $this->payment(['amount' => '90.00', 'reference' => 'A-2']);
+        $this->payment(['amount' => '500.00', 'reference' => 'A-3', 'currency' => 'ZWG']);
+
+        $staff = User::factory()->create(['company_id' => null, 'role' => 'auditor', 'status' => 'active']);
+        $list = fn (array $query) => $this->actingAs($staff)->getJson('/console-api/payments?'.http_build_query($query + ['mode' => 'live']))->assertOk();
+
+        $all = $list([]);
+        $this->assertSame(3, $all->json('total'));
+        $this->assertSame(['paid' => 1, 'pending' => 2], $all->json('summary.by_status'));
+        $this->assertSame([['currency' => 'USD', 'count' => 1, 'total' => '12.00']], $all->json('summary.paid'));
+
+        $this->assertSame(['A-1'], $list(['method' => 'ecocash'])->json('payments.*.reference'));
+        $this->assertSame(['A-3'], $list(['currency' => 'ZWG'])->json('payments.*.reference'));
+        $this->assertSame(['A-2'], $list(['min' => '50', 'max' => '100'])->json('payments.*.reference'));
+        $this->assertSame(['A-1'], $list(['callback' => 'delivered'])->json('payments.*.reference'));
+        $this->assertSame(['A-1'], $list(['q' => '0771234567'])->json('payments.*.reference'));      // by the shopper's number
+        $this->assertSame(['A-1'], $list(['q' => PaymentAttempt::first()->reference])->json('payments.*.reference')); // by what the bank calls it
+        $this->assertSame(['A-3', 'A-2', 'A-1'], $list(['sort' => 'amount_high'])->json('payments.*.reference'));
+
+        $second = $list(['per_page' => 10, 'sort' => 'oldest', 'page' => 1]);
+        $this->assertSame([1, 3, 1], [$second->json('from'), $second->json('to'), $second->json('pages')]);
+        $this->actingAs($staff)->getJson('/console-api/payments?method=cheque')->assertStatus(422);
     }
 }

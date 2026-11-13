@@ -66,6 +66,11 @@ class StewardPayGateway implements BankGateway
 
     public function begin(PaymentAttempt $attempt): array
     {
+        return $this->watching($attempt, 'start', fn () => $this->start($attempt));
+    }
+
+    private function start(PaymentAttempt $attempt): array
+    {
         $payment = $attempt->payment;
 
         $fields = [
@@ -114,6 +119,11 @@ class StewardPayGateway implements BankGateway
     }
 
     public function check(PaymentAttempt $attempt): ?array
+    {
+        return $this->watching($attempt, 'check', fn () => $this->ask($attempt));
+    }
+
+    private function ask(PaymentAttempt $attempt): ?array
     {
         try {
             $answer = match (true) {
@@ -169,6 +179,75 @@ class StewardPayGateway implements BankGateway
             'error' => $result === 'failed' ? self::friendly($status, $error) : null,
             'raw' => $answer,
         ];
+    }
+
+    /** Run bank calls with every exchange written to the payment's audit trail. */
+    private function watching(PaymentAttempt $attempt, string $step, \Closure $work): mixed
+    {
+        $this->client->observe(fn (array $exchange) => $this->record($attempt, $step, $exchange));
+
+        try {
+            return $work();
+        } finally {
+            $this->client->observe(null);
+        }
+    }
+
+    /**
+     * One exchange with the bank → one line in the trail, with what was sent,
+     * what came back and how long it took. The checkout asks the bank every few
+     * seconds, so an identical answer to the same question is counted on the
+     * line it repeats instead of being written again.
+     */
+    private function record(PaymentAttempt $attempt, string $step, array $x): void
+    {
+        $payment = $attempt->payment;
+        $bankStatus = is_array($x['response']) ? ($x['response']['body']['status'] ?? null) : null;
+        $bankStatus = is_string($bankStatus) ? strtoupper($bankStatus) : null;
+        $refused = $x['http'] === null || $x['http'] >= 400;
+        $failed = $refused || in_array($bankStatus, ['FAILED', 'CANCELLED', 'INVALID_REQUEST', 'EXPIRED', 'REVERSED'], true);
+
+        $answer = match (true) {
+            $x['http'] === null => 'no answer: '.$x['error'],
+            $bankStatus !== null => "HTTP {$x['http']}, status {$bankStatus}",
+            default => "HTTP {$x['http']}",
+        };
+        $data = array_filter([
+            'request' => $x['method'].' '.$x['path'],
+            'sent' => $x['request'],
+            'http_status' => $x['http'],
+            'received' => $x['response'],
+            'connection_error' => $x['error'],
+        ], fn ($v) => $v !== null);
+
+        if ($x['call'] === 'token') {
+            // Signing in to the bank is routine: only worth a line when a payment is starting, or when it fails.
+            if ($step === 'start' || $refused) {
+                $payment->log('bank.token', 'Signed in to the bank: '.$answer.($refused ? ' — the bank did not accept our credentials or could not be reached' : ''),
+                    $data, actor: 'bank', level: $refused ? 'error' : 'info', attempt: $attempt, ms: $x['ms']);
+            }
+
+            return;
+        }
+
+        if ($step === 'start') {
+            $payment->log('bank.request', 'Asked the bank to start '.$attempt->label().' → '.$answer, $data,
+                actor: 'bank', level: $failed ? 'error' : (in_array($bankStatus, ['SUCCESS', 'SAF'], true) ? 'ok' : 'info'), attempt: $attempt, ms: $x['ms']);
+
+            return;
+        }
+
+        $signature = sha1($x['path'].'|'.$x['http'].'|'.$bankStatus.'|'.$x['error']);
+        $last = $payment->events()->where('attempt_id', $attempt->id)->where('type', 'bank.check')->reorder()->latest('id')->first();
+
+        if ($last && ($last->data['signature'] ?? null) === $signature) {
+            $last->forceFill(['data' => ['repeats' => ($last->data['repeats'] ?? 1) + 1, 'last_asked' => now()->toIso8601String()] + $last->data])->save();
+
+            return;
+        }
+
+        $payment->log('bank.check', 'Asked the bank about '.$attempt->label().' → '.$answer, $data + ['signature' => $signature, 'repeats' => 1],
+            actor: 'bank', level: $failed ? ($refused ? 'warn' : 'error') : (in_array($bankStatus, ['SUCCESS', 'SAF'], true) ? 'ok' : 'info'), attempt: $attempt, ms: $x['ms']);
     }
 
     private function cardStep(array $answer): array
