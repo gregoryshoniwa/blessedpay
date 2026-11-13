@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Console;
 
 use App\Http\Controllers\Controller;
+use App\Models\ActivityLog;
+use App\Models\ApiKey;
 use App\Models\Payment;
 use App\Services\CallbackSender;
 use App\Services\TryHook;
@@ -25,6 +27,28 @@ class TryController extends Controller
         ], $request->getContent());
 
         return response()->json(['received' => true]);
+    }
+
+    /**
+     * Use a key that already exists on the Try it page. Its secret cannot be
+     * read back, so the page is given a short-lived pass that stands in for
+     * it. Only for someone who may manage that company's keys — they could
+     * simply create a new key otherwise — and written to the activity log.
+     */
+    public function pass(Request $request, int $keyId): JsonResponse
+    {
+        $this->need($request, 'keys.manage');
+        $key = ApiKey::whereKey($keyId)->whereNull('revoked_at')->first();
+        abort_unless($key && $request->user()->reaches($key->company_id), 404);
+        abort_if($key->mode === 'live' && ! $key->company->isActive(), 422, 'Live keys work once the company is approved.');
+
+        ActivityLog::record($request, 'key.tried', "Used {$key->mode} API key \"{$key->name}\" on the Try it page", $key->company_id);
+
+        return response()->json([
+            'pass' => $key->pass(),
+            'minutes' => ApiKey::PASS_MINUTES,
+            'key' => ['id' => $key->id, 'name' => $key->name, 'mode' => $key->mode, 'prefix' => $key->prefix, 'company' => $key->company->name],
+        ]);
     }
 
     /**

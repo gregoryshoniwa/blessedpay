@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\ApiKey;
+use App\Models\ApiRequest;
 use App\Models\Company;
 use App\Models\Invitation;
 use App\Models\Payment;
@@ -477,5 +478,37 @@ class GatewayTest extends TestCase
         $this->get('/')->assertOk()->assertSee('BlessedPay');
         $this->get('/console')->assertOk();
         $this->get('/console/payments')->assertOk();
+    }
+
+    public function test_the_try_it_page_can_use_an_existing_key_through_a_short_lived_pass(): void
+    {
+        $company = Company::create(['name' => 'BlessLuxe', 'slug' => 'blessluxe', 'status' => 'active', 'callback_secret' => 'whsec_test']);
+        [$key] = ApiKey::issue($company, 'Shop', 'test');
+        $developer = $this->member($company, 'developer');
+        $viewer = $this->member($company, 'viewer');
+        $outsider = $this->member(Company::create(['name' => 'Kopje', 'slug' => 'kopje', 'status' => 'active', 'callback_secret' => 'x']), 'owner');
+        $body = ['amount' => '10.00', 'currency' => 'USD', 'reference' => 'T-1', 'return_url' => 'https://shop.test/thanks'];
+
+        // Only someone who could create a key for that company may borrow one.
+        $this->actingAs($viewer)->postJson("/console-api/try/keys/{$key->id}/pass")->assertStatus(403);
+        $this->actingAs($outsider)->postJson("/console-api/try/keys/{$key->id}/pass")->assertStatus(404);
+
+        $pass = $this->actingAs($developer)->postJson("/console-api/try/keys/{$key->id}/pass")->assertOk()->json('pass');
+        $this->assertStringStartsWith('bpt_', $pass);
+        $this->assertDatabaseHas('activity_logs', ['action' => 'key.tried', 'company_id' => $company->id]);
+
+        // The pass works on the real API as that key: same company, same mode…
+        $this->withToken($pass)->postJson('/api/v1/payments', $body)->assertStatus(201)->assertJsonPath('mode', 'test');
+        $this->assertSame($company->id, Payment::first()->company_id);
+        $this->assertSame($key->prefix.'… (Try it)', ApiRequest::first()->key_hint);
+
+        // …but not once it has run out, been tampered with, or its key is revoked.
+        $this->withToken($pass.'x')->postJson('/api/v1/payments', $body)->assertStatus(401);
+        $this->travel(31)->minutes();
+        $this->withToken($pass)->postJson('/api/v1/payments', ['reference' => 'T-2'] + $body)->assertStatus(401);
+        $this->travelBack();
+        $key->update(['revoked_at' => now()]);
+        $this->withToken($pass)->postJson('/api/v1/payments', ['reference' => 'T-3'] + $body)->assertStatus(401);
+        $this->actingAs($developer)->postJson("/console-api/try/keys/{$key->id}/pass")->assertStatus(404);
     }
 }

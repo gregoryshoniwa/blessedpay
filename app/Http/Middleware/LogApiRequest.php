@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\ApiKey;
 use App\Models\ApiRequest;
 use App\Models\Payment;
 use Closure;
@@ -37,7 +38,12 @@ class LogApiRequest
     private function record(Request $request, Response $response, int $ms): void
     {
         $token = (string) $request->bearerToken();
-        $hint = $token !== '' ? substr($token, 0, 12).'…' : null;
+        $used = $request->attributes->get('api_key');
+        $hint = match (true) {
+            $token === '' => null,
+            str_starts_with($token, ApiKey::PASS_PREFIX) => $used ? $used->prefix.'… (Try it)' : 'bpt_… (expired)',
+            default => substr($token, 0, 12).'…',
+        };
         $answer = json_decode((string) $response->getContent(), true) ?? mb_substr((string) $response->getContent(), 0, self::MAX);
         $body = strlen($request->getContent()) > self::MAX ? ['too_large' => strlen($request->getContent()).' bytes'] : ($request->json()->all() ?: null);
 

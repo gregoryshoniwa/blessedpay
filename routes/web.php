@@ -71,6 +71,7 @@ Route::prefix('console-api')->group(function () {
         Route::get('charges', [ChargesController::class, 'show']);
         Route::put('charges', [ChargesController::class, 'update']);
         Route::get('try/hook/{token}', [TryController::class, 'received']);
+        Route::post('try/keys/{keyId}/pass', [TryController::class, 'pass'])->whereNumber('keyId');
     });
 });
 

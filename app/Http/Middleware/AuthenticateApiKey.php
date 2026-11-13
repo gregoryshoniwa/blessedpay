@@ -28,6 +28,7 @@ class AuthenticateApiKey
             $key->forceFill(['last_used_at' => now()])->saveQuietly();
         }
 
+        $request->attributes->set('api_key', $key);
         $request->attributes->set('company', $key->company);
         $request->attributes->set('mode', $key->mode);
 

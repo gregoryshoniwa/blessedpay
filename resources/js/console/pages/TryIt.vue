@@ -52,12 +52,52 @@ const includeKey = ref(false);
 const copied = ref('');
 const seenCallbacks = new Set();
 
-const keyOk = computed(() => new RegExp(`^sk_${mode}_[a-f0-9]{20,}$`).test(apiKey.value.trim()));
+// A key that already exists cannot be read back (only its hash is kept), so
+// picking one borrows it: the server hands this page a pass that stands in for
+// it for half an hour. Only people who may manage keys can do that.
+const mayBorrow = can('keys.manage');
+const companies = ref([]);
+const companyId = ref(session.user.is_staff ? '' : String(session.user.company.id));
+const keys = ref([]);
+const pickedKey = ref('');
+const borrowed = ref(null); // { name, prefix, company, minutes }
+
+async function loadKeys() {
+    keys.value = [];
+    pickedKey.value = '';
+    if (!companyId.value) return;
+    const all = (await get(`/companies/${companyId.value}/keys`).catch(() => ({ keys: [] }))).keys;
+    keys.value = all.filter((k) => k.mode === mode && !k.revoked_at);
+}
+async function borrow() {
+    if (!pickedKey.value) return;
+    busy.value = 'borrow';
+    problem.value = '';
+    try {
+        const data = await post(`/try/keys/${pickedKey.value}/pass`);
+        apiKey.value = data.pass;
+        borrowed.value = { ...data.key, minutes: data.minutes };
+    } catch (e) {
+        problem.value = e.message;
+        pickedKey.value = '';
+    } finally {
+        busy.value = '';
+    }
+}
+function stopBorrowing() {
+    borrowed.value = null;
+    pickedKey.value = '';
+    apiKey.value = '';
+}
+
+const keyOk = computed(() => (borrowed.value ? apiKey.value.startsWith('bpt_') : new RegExp(`^sk_${mode}_[a-f0-9]{20,}$`).test(apiKey.value.trim())));
+// A borrowed key has no secret here to copy: commands keep the placeholder.
+const canCopyKey = computed(() => keyOk.value && !borrowed.value);
 // A key for the other mode: say so, rather than quietly making the wrong kind of payment.
 const keyWrongMode = computed(() => apiKey.value.trim().startsWith(live ? 'sk_test_' : 'sk_live_'));
 const ready = computed(() => keyOk.value && (!live || understood.value));
-const maskedKey = computed(() => (apiKey.value ? apiKey.value.trim().slice(0, 14) + '…' : KEY_NAME));
-const rememberKey = () => !live && keep('bp-try-key', apiKey.value.trim()); // a live key stays in memory only
+const maskedKey = computed(() => (borrowed.value ? borrowed.value.prefix + '…' : apiKey.value ? apiKey.value.trim().slice(0, 14) + '…' : KEY_NAME));
+const rememberKey = () => !live && !borrowed.value && keep('bp-try-key', apiKey.value.trim()); // a live key stays in memory only
 
 function add(entry) {
     log.value.push({ id: log.value.length + 1, at: new Date(), open: true, ...entry });
@@ -119,7 +159,7 @@ function downloadPostman() {
         info: { name: 'BlessedPay API', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json', description: 'Start a payment, then read it back. Set api_key to a key from the console.' },
         variable: [
             { key: 'base_url', value: origin },
-            { key: 'api_key', value: includeKey.value && keyOk.value ? apiKey.value.trim() : KEY_NAME },
+            { key: 'api_key', value: includeKey.value && canCopyKey.value ? apiKey.value.trim() : KEY_NAME },
             { key: 'payment_id', value: payment.value?.id || '' },
         ],
         item: [
@@ -174,6 +214,11 @@ async function start() {
     problem.value = '';
     rememberKey();
     const { status, data } = await callApi('Your server starts a payment', 'POST', '/api/v1/payments', createBody(), { 'Idempotency-Key': reference.value });
+    if (status === 401 && borrowed.value) {
+        stopBorrowing();
+        problem.value = 'The half hour for that key ran out, or the key was revoked. Choose it again.';
+        return null;
+    }
     if (status !== 200 && status !== 201) {
         problem.value = data?.error?.message || data?.message || Object.values(data?.errors || {})[0]?.[0] || 'The payment could not be started. See the log.';
         return null;
@@ -283,6 +328,12 @@ function reset() {
     newReference();
 }
 
+onMounted(async () => {
+    if (mayBorrow) {
+        if (session.user.is_staff) companies.value = (await get('/companies').catch(() => ({ companies: [] }))).companies;
+        else loadKeys();
+    }
+});
 onMounted(() => {
     if (!window.BlessedPay) {
         const script = document.createElement('script');
@@ -324,16 +375,47 @@ onBeforeUnmount(() => clearTimeout(after));
         <section aria-labelledby="shop-h" class="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-5">
             <div class="border border-line bg-white p-5">
                 <h2 id="shop-h" class="text-lg font-semibold">1. Your {{ mode }} key</h2>
-                <label class="label mt-3" for="try-key">{{ live ? 'Live' : 'Test' }} API key</label>
-                <input id="try-key" v-model.trim="apiKey" class="field font-mono text-sm" type="password" autocomplete="off" :placeholder="`sk_${mode}_…`" aria-describedby="try-key-help" />
-                <p id="try-key-help" class="mt-1.5 text-sm" :class="keyWrongMode ? 'font-medium' : 'text-mute'">
+
+                <!-- A key that is in use -->
+                <div v-if="borrowed" class="mt-3 border border-line border-l-4 border-l-gold bg-paper px-4 py-3" role="status">
+                    <p class="font-semibold">Using "{{ borrowed.name }}"<template v-if="session.user.is_staff"> of {{ borrowed.company }}</template></p>
+                    <p class="mt-0.5 font-mono text-sm text-mute">{{ borrowed.prefix }}…</p>
+                    <p class="mt-1.5 text-sm text-[#454545]">Works here for {{ borrowed.minutes }} minutes. The key's secret is never shown again, so it cannot be copied into the commands below.</p>
+                    <button type="button" class="link mt-1 min-h-11 text-sm" @click="stopBorrowing">Use a different key</button>
+                </div>
+
+                <template v-else>
+                    <!-- Choose one that already exists -->
+                    <div v-if="mayBorrow" class="mt-3 grid gap-3">
+                        <div v-if="session.user.is_staff">
+                            <label class="label" for="try-company">Company</label>
+                            <SelectBox id="try-company" v-model="companyId" :options="[{ value: '', label: 'Choose a company' }, ...companies.map((c) => ({ value: String(c.id), label: c.name }))]" @change="loadKeys" />
+                        </div>
+                        <div v-if="companyId">
+                            <label class="label" for="try-pick">Use a {{ mode }} key you already have</label>
+                            <SelectBox
+                                v-if="keys.length"
+                                id="try-pick"
+                                v-model="pickedKey"
+                                :disabled="busy === 'borrow'"
+                                :options="[{ value: '', label: 'Choose a key' }, ...keys.map((k) => ({ value: String(k.id), label: `${k.name} (${k.prefix}…)` }))]"
+                                @change="borrow"
+                            />
+                            <p v-else class="text-sm text-mute">This company has no {{ mode }} key yet.</p>
+                        </div>
+                    </div>
+
+                    <label class="label mt-4" for="try-key">{{ mayBorrow ? `Or paste a ${mode} key` : `${live ? 'Live' : 'Test'} API key` }}</label>
+                    <input id="try-key" v-model.trim="apiKey" class="field font-mono text-sm" type="password" autocomplete="off" :placeholder="`sk_${mode}_…`" aria-describedby="try-key-help" />
+                </template>
+                <p v-if="!borrowed" id="try-key-help" class="mt-1.5 text-sm" :class="keyWrongMode ? 'font-medium' : 'text-mute'">
                     <template v-if="keyWrongMode">
                         That is a {{ live ? 'test' : 'live' }} key, and the console is showing {{ live ? 'Live' : 'Test' }}. Paste a {{ mode }} key, or change the switch at the bottom of the menu.
                     </template>
                     <template v-else-if="live">Used for this visit only and never remembered. Keys are shown once when created, on your company page.</template>
                     <template v-else>Kept in this browser tab only. Keys are shown once when created, on your company page.</template>
                 </p>
-                <button v-if="!keyOk && !session.user.is_staff && can('keys.manage')" type="button" class="btn btn-line mt-3" :disabled="busy === 'key'" @click="makeKey">
+                <button v-if="!keyOk && !borrowed && !session.user.is_staff && can('keys.manage')" type="button" class="btn btn-line mt-3" :disabled="busy === 'key'" @click="makeKey">
                     {{ busy === 'key' ? 'Creating…' : `Create a ${mode} key for this page` }}
                 </button>
             </div>
@@ -382,13 +464,13 @@ onBeforeUnmount(() => clearTimeout(after));
                 <h2 class="text-lg font-semibold">3. Copy into Postman or a terminal</h2>
                 <p class="mt-1 text-sm text-mute">In Postman choose Import, then paste a command: it becomes a ready request. Or download the collection, which carries the payment id from the first request into the second.</p>
                 <label class="mt-3 flex min-h-11 cursor-pointer items-center gap-3 text-sm">
-                    <input v-model="includeKey" type="checkbox" class="size-5 accent-ink" :disabled="!keyOk" />
+                    <input v-model="includeKey" type="checkbox" class="size-5 accent-ink" :disabled="!canCopyKey" />
                     Put my {{ mode }} key in what I copy (otherwise it says {{ KEY_NAME }})
                 </label>
 
                 <div v-for="snippet in [
-                    { id: 'create', label: 'Start a payment', text: curlCreate(includeKey && keyOk) },
-                    { id: 'status', label: 'Read the payment', text: curlStatus(includeKey && keyOk) },
+                    { id: 'create', label: 'Start a payment', text: curlCreate(includeKey && canCopyKey) },
+                    { id: 'status', label: 'Read the payment', text: curlStatus(includeKey && canCopyKey) },
                     { id: 'verify', label: 'Check a callback\'s signature (PHP)', text: verifySnippet },
                 ]" :key="snippet.id" class="mt-4">
                     <div class="flex items-center justify-between gap-3">
@@ -427,7 +509,7 @@ onBeforeUnmount(() => clearTimeout(after));
                             <div>
                                 <div class="mb-1 flex items-center justify-between gap-3">
                                     <h3 class="font-semibold">Request</h3>
-                                    <button v-if="entry.curl" type="button" class="link min-h-11" @click="copy(entry.curl(includeKey && keyOk), 'e' + entry.id)">{{ copied === 'e' + entry.id ? 'Copied' : 'Copy as cURL' }}</button>
+                                    <button v-if="entry.curl" type="button" class="link min-h-11" @click="copy(entry.curl(includeKey && canCopyKey), 'e' + entry.id)">{{ copied === 'e' + entry.id ? 'Copied' : 'Copy as cURL' }}</button>
                                 </div>
                                 <pre class="overflow-x-auto bg-paper p-3 font-mono text-xs leading-relaxed" tabindex="0">{{ entry.request.line }}
 <template v-for="(value, name) in entry.request.headers" :key="name">{{ name }}: {{ value }}
