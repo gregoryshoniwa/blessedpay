@@ -10,7 +10,7 @@ The shop lives next door at `../blessluxe` (Laravel 13 + Vue 3 + MySQL). Its `CL
 
 ## Where things stand (created 13 Nov 2026)
 
-- The gateway console, the company-facing API, the checkout (full page and pop-up), a sandbox bank and the real bank integration (StewardPay / CyberPay) are built — see "What is built" and "The bank and the checkout". The shop's driver for this API (in `../blessluxe`) is not written yet.
+- The gateway console, the company-facing API, the checkout (full page and pop-up), a sandbox bank and the real bank integration (StewardPay / CyberPay) are built — see "What is built" and "The bank and the checkout". The shop's driver for this API is written (see "How the shop talks to this app").
 - Local database: MySQL `blessedpay` on `127.0.0.1:3306`, user `root` (password in `.env`, same server as the shop).
 - Git is on `master`, pushed to `git@github.com:gregoryshoniwa/blessedpay.git` (use SSH — the HTTPS login saved on this Mac is a different GitHub account and gets a 403).
 - Deployed on Laravel Cloud: `pay.blessluxe.com` serves this app (the Laravel starter page) as of 13 Nov 2026.
@@ -29,7 +29,7 @@ The shop lives next door at `../blessluxe` (Laravel 13 + Vue 3 + MySQL). Its `CL
 - **Outcomes** go through `PaymentService::settle()` only: idempotent, once paid stays paid, writes the payment log (`payment_events`), then `CallbackSender` POSTs the company a JSON body signed `X-BlessedPay-Signature: t=<unix>,v1=<hmac-sha256 of "t.body">` with the company's callback secret. Sent inside the request (no queue); `php artisan payments:callbacks` retries failures and re-checks pending payments. Callback addresses that resolve to private/local IPs are refused outside local/testing.
 - **People**: `users.company_id` null = BlessedPay staff (reach every company), set = a member of that company (reach only it; another company's rows are a 404). Roles are fixed in [Roles](app/Support/Roles.php) — staff: super_admin, operations, support, auditor; company: owner, admin, finance, developer, viewer. Check with `$this->need($request, 'ability')` and `$this->company($request, $id)` in controllers. People join an existing company (or staff) by invitation only (single-use link, 7 days, also returned to the inviter to pass on because mail may not be configured). Lost super-admin password: `php artisan blessedpay:admin` (asks for a new one).
 - **Secrets**: API keys are stored only as SHA-256 hashes and shown once. The callback secret is encrypted at rest; viewing it is written to the activity log.
-- **Not built yet**: two-step sign-in (the design shows it), password reset by email, ownership transfer, refunds. The shop's driver for this API (in `../blessluxe`) is also not written.
+- **Not built yet**: two-step sign-in (the design shows it), password reset by email, ownership transfer, refunds.
 - **Look**: black + gold from the logo, square corners, Sora headings / Inter body / JetBrains Mono labels (tokens in `resources/css/app.css`). Gold is a fill or sits on black — never gold text on white (use `gold-ink`). `public/mark.png` has a black background: use it on black only. Hidden labels (`sr-only`) inside a scrolling table need the scroll box to be `relative`, or they widen the page on phones.
 
 ## The bank and the checkout (built 13 Nov 2026, branch `feature/stewardpay-checkout`)
@@ -102,15 +102,14 @@ php artisan payments:callbacks                # retry failed callbacks, re-check
 - **The bank's fee** (told to BLESSLUXE by the bank, Nov 2026): cards 1% with a US$0.20 minimum, EcoCash and bank account 1%; money is credited straight to BLESSLUXE's corporate account and the bank keeps its fee from that. Each company chooses to absorb it or pass it to the shopper (`companies.fee_bearer`, [Fees](app/Services/Fees.php)).
 - **Subdomain, not a path**: `pay.blessluxe.com`, so cookies and deploys stay apart from the shop. Keep `SESSION_DOMAIN=null` — never `.blessluxe.com`.
 
-## How the shop will talk to this app
+## How the shop talks to this app (driver written 13 Nov 2026, in `../blessluxe`, branch `feature/blessedpay-gateway`)
 
-The shop already has a gateway contract (`App\Services\Payments\Contracts\Gateway` in `../blessluxe`). Adding a provider there is one driver class + one line in `Payments::gateways()` + credentials in `config/services.php`. So this app should expose a small API the shop's driver can call:
+The shop's gateway contract (`App\Services\Payments\Contracts\Gateway`) has a driver for this API: `App\Services\Payments\Gateways\BlessedPayGateway` + the client `App\Services\Payments\BlessedPay`, registered in `Payments::gateways()`, credentials in the shop's `config/services.php` (`BLESSEDPAY_API_KEY`, `BLESSEDPAY_SIGNING_SECRET` = this company's callback secret, `BLESSEDPAY_BASE_URL`).
 
-1. **Start a payment** — amount, reference, return URL, callback URL → payment id + a redirect URL (or a phone-prompt instruction).
-2. **Status** — the shop polls it, as it does for VelocityAfrica.
-3. **Callback** — this app posts the outcome to the shop, signed with a shared secret (HMAC), with idempotency keys so a retry never pays twice.
-
-Everything that happens after "paid" (order, stock, Bees, receipts) stays in the shop's `PaymentOutcomes`. Never put order logic here.
+- **Hosted**: the shop starts a payment (`POST /api/v1/payments`, the order reference as `Idempotency-Key`), redirects the shopper to `redirect_url`, and they choose EcoCash or a card HERE. It is one checkout option in the shop.
+- **Outcome**: our signed callback goes to the shop's `/api/store/payments/blessedpay/webhook` (it checks the signature, a 5-minute window, and that the amount and currency are the ones it asked for); the shop also asks `GET /api/v1/payments/{id}` when the shopper returns and from its reconcile command. The `status` we append to the return address is never trusted by the shop.
+- **Changing this API's shape breaks the shop**: `id`, `status`, `amount`, `currency`, `reference`, `method`, `gateway_reference`, `fee`, `charged`, `redirect_url`, the callback body `{event, payment}` and the signature header are all read there. The shop's `BlessedPayGatewayTest` fakes them.
+- Everything that happens after "paid" (order, stock, Bees, receipts) stays in the shop's `PaymentOutcomes`. Never put order logic here.
 
 ## Hosting and domain
 
